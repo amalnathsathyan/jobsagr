@@ -2,7 +2,7 @@ FROM node:23-slim
 
 WORKDIR /app
 
-# Install system dependencies for Playwright
+# Install system deps for Playwright chromium
 RUN apt-get update && apt-get install -y \
     libgbm-dev \
     libnss3 \
@@ -10,6 +10,9 @@ RUN apt-get update && apt-get install -y \
     libgtk-3-0 \
     libasound2 \
     && rm -rf /var/lib/apt/lists/*
+
+# Install ElizaOS CLI globally
+RUN npm install -g @elizaos/cli
 
 COPY package*.json ./
 RUN npm install
@@ -19,4 +22,6 @@ RUN npx playwright install --with-deps chromium
 
 COPY . .
 
-CMD ["npm", "start"]
+EXPOSE 3000
+
+CMD ["elizaos", "start", "--character", "./characters/agent.character.json"]

@@ -1,23 +1,25 @@
 {
   "name": "jobsagr-agent",
   "version": "1.0.0",
-  "main": "src/index.ts",
+  "private": true,
   "type": "module",
   "scripts": {
-    "start": "tsx src/index.ts",
-    "dev": "tsx --watch src/index.ts",
+    "start": "elizaos start --character ./characters/agent.character.json",
+    "dev": "elizaos dev --character ./characters/agent.character.json",
     "build": "tsc"
   },
   "dependencies": {
-    "@elizaos/core": "latest",
+    "@elizaos/core": "^1.0.0",
+    "@elizaos/plugin-bootstrap": "^1.0.0",
+    "@elizaos/plugin-openai": "^1.0.0",
     "@supabase/supabase-js": "^2.45.0",
-    "playwright": "^1.48.0",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "playwright": "^1.59.1"
   },
   "devDependencies": {
-    "tsx": "^4.19.1",
-    "typescript": "^5.6.3",
-    "@types/node": "^22.0.0"
+    "@elizaos/cli": "^1.0.0",
+    "@types/node": "^22.19.17",
+    "typescript": "^5.9.3"
   },
   "engines": {
     "node": ">=23.0.0"

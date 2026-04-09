@@ -1,32 +1,23 @@
-import { AgentRuntime, Character, ModelProviderName } from '@elizaos/core';
-import * as fs from 'fs';
-import * as path from 'path';
-import { browseAndScrape } from './actions/browseAndScrape.js';
-import dotenv from 'dotenv';
+/**
+ * JobsAgr Plugin — ElizaOS Plugin for autonomous job discovery
+ *
+ * This plugin scrapes X (Twitter) company profiles, navigates to career pages,
+ * extracts job listings, and stores them in Supabase.
+ */
 
-dotenv.config();
+import { type Plugin } from "@elizaos/core";
+import { scrapeXProfile } from "./actions/scrapeXProfile.js";
+import { findCareersPage } from "./actions/findCareersPage.js";
+import { parseAndStoreJobs } from "./actions/parseAndStoreJobs.js";
+import { jobSeedsProvider } from "./providers/jobSeeds.js";
 
-async function startAgent() {
-  const characterPath = path.join(process.cwd(), 'characters', 'scout.json');
-  const characterRaw = fs.readFileSync(characterPath, 'utf8');
-  const character: Character = JSON.parse(characterRaw);
+export const jobsPlugin: Plugin = {
+  name: "jobsagr-plugin",
+  description:
+    "Discovers and stores job listings from X company profiles via a 3-step pipeline: scrape profile → find careers page → parse and store jobs.",
+  actions: [scrapeXProfile, findCareersPage, parseAndStoreJobs],
+  providers: [jobSeedsProvider],
+  evaluators: [],
+};
 
-  const runtime = new AgentRuntime({
-    token: process.env.OPENAI_API_KEY || '',
-    modelProvider: ModelProviderName.OPENAI,
-    character,
-    actions: [browseAndScrape],
-    providers: [],
-    managers: [],
-    databaseAdapter: null as any, // Add adapter if needed
-    cacheManager: null as any
-  });
-
-  await runtime.initialize();
-  console.log(`${character.name} started successfully!`);
-}
-
-startAgent().catch(err => {
-  console.error('Fatal error starting agent:', err);
-  process.exit(1);
-});
+export default jobsPlugin;

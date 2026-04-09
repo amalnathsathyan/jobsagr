@@ -1,0 +1,21 @@
+{
+  "name": "jobsagr",
+  "version": "1.0.0",
+  "description": "AI-powered self-updating job portal — ElizaOS agent on Nosana",
+  "scripts": {
+    "dev:web": "cd web && npm run dev",
+    "dev:agent": "cd agent && npm run dev",
+    "build:web": "cd web && npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/amalnathsathyan/jobsagr.git"
+  },
+  "keywords": ["elizaos", "nosana", "job-portal", "ai-agent"],
+  "author": "",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/amalnathsathyan/jobsagr/issues"
+  },
+  "homepage": "https://github.com/amalnathsathyan/jobsagr#readme"
+}
