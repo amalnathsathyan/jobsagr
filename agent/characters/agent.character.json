@@ -26,7 +26,9 @@
     [
       {
         "name": "{{user}}",
-        "content": { "text": "Find jobs from https://x.com/arbitrum" }
+        "content": {
+          "text": "Find jobs from https://x.com/arbitrum"
+        }
       },
       {
         "name": "JobsAgr",
@@ -39,7 +41,9 @@
     [
       {
         "name": "{{user}}",
-        "content": { "text": "Check https://offchainlabs.com for job openings" }
+        "content": {
+          "text": "Check https://offchainlabs.com for job openings"
+        }
       },
       {
         "name": "JobsAgr",
@@ -52,7 +56,9 @@
     [
       {
         "name": "{{user}}",
-        "content": { "text": "Parse jobs from https://jobs.lever.co/offchainlabs" }
+        "content": {
+          "text": "Parse jobs from https://jobs.lever.co/offchainlabs"
+        }
       },
       {
         "name": "JobsAgr",
