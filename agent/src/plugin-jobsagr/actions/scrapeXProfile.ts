@@ -1,13 +1,13 @@
 /**
  * SCRAPE_X_PROFILE
  *
- * Full navigation pipeline inside one action:
- * X profile → click website link → detect where we landed
- * → if link aggregator (linktr.ee etc.) find & click through to real site
- * → scan for careers/jobs link → navigate to it
- * → return careers page URL
- *
- * The "intelligence" is in the navigation logic here, not the LLM.
+ * Pipeline:
+ * 1. Load X profile → extract jobs shown directly on X (e.g. Arbitrum "We're Hiring")
+ * 2. Get website link → navigate to it
+ * 3. Handle aggregators
+ * 4. Find careers page (smart: link scoring + path guessing + LLM-assisted)
+ * 5. Extract jobs from careers page (networkidle + full link dump to LLM)
+ * 6. Store in Supabase
  */
 
 import { type Action, type IAgentRuntime, ModelType } from "@elizaos/core";
@@ -18,86 +18,184 @@ import { upsertJobs, type JobRow } from "../services/supabase.js";
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const LINK_AGGREGATOR_PATTERNS = [
-  "linktr.ee", "bio.link", "beacons.ai",
-  "lnk.bio", "campsite.bio", "taplink.cc", "allmylinks.com",
+  "linktr.ee", "bio.link", "beacons.ai", "lnk.bio",
+  "campsite.bio", "taplink.cc", "allmylinks.com",
 ];
 
 const SKIP_DOMAINS = [
   "twitter.com", "x.com", "instagram.com", "youtube.com",
   "discord.gg", "discord.com", "t.me", "telegram.me",
-  "facebook.com", "tiktok.com", "medium.com", "docs.",
+  "facebook.com", "tiktok.com", "medium.com",
   "mirror.xyz", "substack.com", "warpcast.com",
 ];
 
 const CAREERS_KEYWORDS = [
   "careers", "jobs", "hiring", "join us", "join the team",
-  "open roles", "work with us", "opportunities", "work at us",
-  "we're hiring", "positions", "vacancies",
+  "open roles", "work with us", "opportunities",
+  "we're hiring", "positions", "vacancies", "join our team",
 ];
 
 const CAREERS_PATH_GUESSES = [
-  "/careers", "/jobs", "/join", "/join-us",
-  "/work-with-us", "/opportunities", "/hiring",
+  "/careers", "/jobs", "/join", "/join-us", "/join-the-team",
+  "/work-with-us", "/opportunities", "/hiring", "/open-roles",
+  "/about/careers", "/company/careers", "/en/careers",
+];
+
+const JOB_BOARD_DOMAINS = [
+  "lever.co", "greenhouse.io", "ashbyhq.com", "workable.com",
+  "workday.com", "smartrecruiters.com", "breezy.hr", "recruitee.com",
+  "jobvite.com", "icims.com", "taleo.net", "bamboohr.com",
+  "notion.site", "apply.workable", "jobs.ashbyhq",
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function isAggregator(url: string): boolean {
-  return LINK_AGGREGATOR_PATTERNS.some((p) => url.includes(p));
+const isAggregator = (url: string) => LINK_AGGREGATOR_PATTERNS.some((p) => url.includes(p));
+const isSkippable = (url: string) => SKIP_DOMAINS.some((d) => url.includes(d));
+const isCareersUrl = (url: string) => CAREERS_KEYWORDS.some((k) => url.toLowerCase().includes(k));
+const settle = (page: Page, ms = 2500) => page.waitForTimeout(ms);
+
+// ─── Step 0: Extract jobs shown directly on the X profile page ───────────────
+// Some companies (e.g. Arbitrum) show a "We're Hiring" widget with job cards
+// directly on their X profile. Grab those before navigating away.
+
+async function extractXProfileJobs(page: Page, cb: (msg: string) => void): Promise<JobRow[]> {
+  const jobs: JobRow[] = [];
+
+  try {
+    // X renders job cards in a hiring section
+    // Selectors observed: [data-testid="jobCard"], elements containing job titles + location
+    const hiringSection = await page.$('[data-testid="profileHiring"], [aria-label*="hiring"], [aria-label*="Hiring"]').catch(() => null);
+
+    if (!hiringSection) {
+      // Check for any visible "We're Hiring" / jobs text block
+      const bodyText = await page.innerText("body").catch(() => "");
+      if (!bodyText.toLowerCase().includes("hiring") && !bodyText.toLowerCase().includes("open roles")) {
+        return jobs;
+      }
+    }
+
+    // Collect all job-like links on the profile page
+    const allLinks = await page.$$eval("a[href]", (els: any[]) =>
+      els.map((a) => ({
+        href: (a.href || "").trim(),
+        text: (a.innerText || "").replace(/\s+/g, " ").trim(),
+        ariaLabel: (a.getAttribute("aria-label") || "").trim(),
+      }))
+    ).catch(() => [] as { href: string; text: string; ariaLabel: string }[]);
+
+    // Job board links found directly on X profile
+    const jobBoardLinks = allLinks.filter(({ href }) =>
+      JOB_BOARD_DOMAINS.some((d) => href.includes(d))
+    );
+
+    if (jobBoardLinks.length > 0) {
+      cb(`🎯 Found ${jobBoardLinks.length} job board links on X profile directly`);
+      for (const { href, text, ariaLabel } of jobBoardLinks) {
+        const title = text || ariaLabel || href.split("/").filter(Boolean).pop() || "Job Opening";
+        if (title.length > 3 && title.length < 150) {
+          jobs.push({ title, link: href, description: "" });
+        }
+      }
+      return jobs;
+    }
+
+    // Try to find job titles in "We're Hiring" cards
+    // X renders these as article elements or divs with role="link"
+    const jobCards = await page.$$eval(
+      '[data-testid="jobCard"], [data-testid="hiringSectionCard"]',
+      (els: any[]) =>
+        els.map((el) => ({
+          title: (el.querySelector('[data-testid="jobTitle"]')?.innerText || el.innerText || "").trim(),
+          href: (el.querySelector("a")?.href || "").trim(),
+        }))
+    ).catch(() => [] as { title: string; href: string }[]);
+
+    if (jobCards.length > 0) {
+      cb(`🎯 Found ${jobCards.length} job cards on X profile`);
+      for (const { title, href } of jobCards) {
+        if (title.length > 3) jobs.push({ title, link: href, description: "" });
+      }
+    }
+  } catch (err: any) {
+    cb(`⚠️  X profile job extraction skipped: ${err.message}`);
+  }
+
+  return jobs;
 }
 
-function isSkippable(url: string): boolean {
-  return SKIP_DOMAINS.some((d) => url.includes(d));
-}
+// ─── LLM-assisted careers URL finder ─────────────────────────────────────────
+// When link scoring fails, ask the LLM to identify the careers page from a
+// list of all links on the company's homepage.
 
-function isCareersUrl(url: string): boolean {
-  return CAREERS_KEYWORDS.some((k) => url.toLowerCase().includes(k));
-}
-
-async function waitAndSettle(page: Page, ms = 2500): Promise<void> {
-  await page.waitForTimeout(ms);
-}
-
-// Get all visible external links from the current page
-async function getExternalLinks(
+async function findCareersUrlWithLLM(
+  runtime: IAgentRuntime,
   page: Page,
-  currentDomain: string
-): Promise<{ href: string; text: string }[]> {
-  return page.$$eval(
-    "a[href]",
-    (els: any[], { domain, skip }: { domain: string; skip: string[] }) =>
-      els
-        .map((a) => ({ href: (a.href || "").trim(), text: (a.innerText || "").toLowerCase().trim() }))
-        .filter(({ href }) => {
-          if (!href.startsWith("http")) return false;
-          if (skip.some((s) => href.includes(s))) return false;
-          try {
-            const h = new URL(href).hostname;
-            return !h.includes(domain);
-          } catch { return false; }
-        }),
-    { domain: currentDomain, skip: SKIP_DOMAINS }
-  );
+  officialWebsite: string,
+  cb: (msg: string) => void
+): Promise<string | null> {
+  cb("🤖 Using LLM to find careers page from site links...");
+
+  const allLinks = await page.$$eval("a[href]", (els: any[]) =>
+    els
+      .map((a) => ({
+        href: (a.href || "").trim(),
+        text: (a.innerText || "").replace(/\s+/g, " ").trim().slice(0, 80),
+      }))
+      .filter(({ href }) => href.startsWith("http") && href.length < 300)
+      .slice(0, 100)
+  ).catch(() => [] as { href: string; text: string }[]);
+
+  if (allLinks.length === 0) return null;
+
+  const linkList = allLinks.map((l) => `${l.text} | ${l.href}`).join("\n");
+
+  const prompt = `You are given a list of links from a company website: ${officialWebsite}
+
+Find the URL that leads to their careers/jobs page where they post job openings.
+Return ONLY the URL string, nothing else. No explanation. No markdown.
+If no careers page link is found, return the word: null
+
+Links:
+${linkList}`;
+
+  const response = (await runtime.useModel(ModelType.TEXT_LARGE, { prompt })) as string;
+
+  // Strip thinking tags from reasoning models
+  const cleaned = response
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/```/g, "")
+    .trim()
+    .split("\n")[0]
+    .trim();
+
+  if (!cleaned || cleaned === "null" || !cleaned.startsWith("http")) return null;
+
+  cb(`🤖 LLM identified careers URL: ${cleaned}`);
+  return cleaned;
 }
 
-// Score a link for likelihood of being a careers page
+// ─── Careers page link finder (score + guess + LLM) ──────────────────────────
+
 function careersScore(href: string, text: string): number {
   let score = 0;
   for (const kw of CAREERS_KEYWORDS) {
-    if (text.includes(kw)) score += 4;
+    if (text.toLowerCase().includes(kw)) score += 4;
     if (href.toLowerCase().includes(kw)) score += 3;
   }
   return score;
 }
 
-// Find the best careers link on the current page
-async function findCareersLink(page: Page): Promise<string | null> {
-  const currentDomain = new URL(page.url()).hostname.replace("www.", "");
-  const links = await page.$$eval(
-    "a[href]",
-    (els: any[]) =>
-      els.map((a) => ({ href: (a.href || "").trim(), text: (a.innerText || "").toLowerCase().trim() }))
-  );
+async function findCareersLink(
+  runtime: IAgentRuntime,
+  page: Page,
+  officialWebsite: string,
+  cb: (msg: string) => void
+): Promise<string | null> {
+  // 1. Score-based link search
+  const links = await page.$$eval("a[href]", (els: any[]) =>
+    els.map((a) => ({ href: (a.href || "").trim(), text: (a.innerText || "").toLowerCase().trim() }))
+  ).catch(() => [] as { href: string; text: string }[]);
 
   let best: { href: string; score: number } | null = null;
   for (const { href, text } of links) {
@@ -105,118 +203,179 @@ async function findCareersLink(page: Page): Promise<string | null> {
     const score = careersScore(href, text);
     if (score > 0 && (!best || score > best.score)) best = { href, score };
   }
+  if (best) { cb(`✅ Found via link scoring (score=${best.score}): ${best.href}`); return best.href; }
 
-  if (best) return best.href;
-
-  // Probe common paths
-  const base = `https://${currentDomain}`;
+  // 2. Common path probing
+  const base = new URL(officialWebsite).origin;
   for (const p of CAREERS_PATH_GUESSES) {
     try {
-      const resp = await page.goto(base + p, { timeout: 8000 });
-      if (resp && resp.status() >= 200 && resp.status() < 400) return base + p;
+      const resp = await page.goto(base + p, { timeout: 8000, waitUntil: "domcontentloaded" });
+      if (resp && resp.status() >= 200 && resp.status() < 400) {
+        cb(`✅ Found via path probe: ${base + p}`);
+        return base + p;
+      }
     } catch { /* skip */ }
   }
 
-  return null;
+  // Navigate back to homepage before LLM step
+  try {
+    await page.goto(officialWebsite, { timeout: 15000, waitUntil: "domcontentloaded" });
+    await settle(page, 2000);
+  } catch { /* ignore */ }
+
+  // 3. LLM fallback
+  return findCareersUrlWithLLM(runtime, page, officialWebsite, cb);
 }
 
-// Navigate through a link aggregator to find the official website
-async function resolveAggregator(
-  page: Page,
-  aggregatorUrl: string,
-  cb: (msg: string) => void
-): Promise<string> {
-  cb(`🌳 Link aggregator detected — opening ${aggregatorUrl}`);
+// ─── Aggregator resolver ──────────────────────────────────────────────────────
+
+async function resolveAggregator(page: Page, aggregatorUrl: string, cb: (msg: string) => void): Promise<string> {
+  cb(`🌳 Aggregator detected — ${aggregatorUrl}`);
   await page.goto(aggregatorUrl, { timeout: 15000, waitUntil: "domcontentloaded" });
-  await waitAndSettle(page);
+  await settle(page);
 
-  const currentDomain = new URL(page.url()).hostname.replace("www.", "");
-  const links = await getExternalLinks(page, currentDomain);
+  const domain = new URL(page.url()).hostname.replace("www.", "");
+  const links = await page.$$eval("a[href]", (els: any[], { d, skip }: any) =>
+    els
+      .map((a) => ({ href: (a.href || "").trim() }))
+      .filter(({ href }) => {
+        if (!href.startsWith("http")) return false;
+        if (skip.some((s: string) => href.includes(s))) return false;
+        try { return !new URL(href).hostname.includes(d); } catch { return false; }
+      }),
+    { d: domain, skip: SKIP_DOMAINS }
+  ).catch(() => [] as { href: string }[]);
 
-  cb(`   Found ${links.length} external links on aggregator page`);
+  const official = links.find(({ href }) => !isAggregator(href));
+  if (official) { cb(`✅ Official site from aggregator: ${official.href}`); return official.href; }
 
-  // Prefer links that look like official websites (not socials, not more aggregators)
-  const official = links.find(
-    ({ href }) => !isAggregator(href) && !isSkippable(href)
-  );
-
-  if (official) {
-    cb(`✅ Official website found: ${official.href}`);
-    return official.href;
-  }
-
-  cb(`⚠️  Could not find official website from aggregator, using aggregator URL`);
+  cb(`⚠️  Could not resolve aggregator, using as-is`);
   return aggregatorUrl;
 }
 
-// ─── Job extraction ───────────────────────────────────────────────────────────
+// ─── SPA-aware page content extraction ───────────────────────────────────────
 
-async function extractAndStoreJobs(
+async function extractPageContent(page: Page, url: string, cb: (msg: string) => void) {
+  try {
+    await page.goto(url, { timeout: 25000, waitUntil: "networkidle" });
+  } catch {
+    cb("⚠️  networkidle timed out, proceeding with what loaded...");
+  }
+  await settle(page, 3000);
+
+  const title = await page.title().catch(() => "");
+  const bodyText = await page.innerText("body").catch(() => "");
+  const allLinks = await page.$$eval("a[href]", (els: any[]) =>
+    els
+      .map((a) => ({
+        href: (a.href || "").trim(),
+        text: (a.innerText || "").replace(/\s+/g, " ").trim(),
+      }))
+      .filter(({ href, text }) => href.startsWith("http") && text.length > 2 && text.length < 200)
+  ).catch(() => [] as { href: string; text: string }[]);
+
+  cb(`📄 Page: ${bodyText.length} chars, ${allLinks.length} links`);
+  return { bodyText, allLinks, title };
+}
+
+// ─── Job extraction from careers page ────────────────────────────────────────
+
+async function extractJobsFromPage(
   runtime: IAgentRuntime,
   page: Page,
   careersUrl: string,
-  companyName: string,
-  xHandle: string,
-  companyWebsite: string,
   cb: (msg: string) => void
-): Promise<{ found: number; stored: number }> {
-  try {
-    await page.goto(careersUrl, { timeout: 15000, waitUntil: "domcontentloaded" });
-    await waitAndSettle(page);
+): Promise<{ title: string; description?: string; link?: string }[]> {
+  const { bodyText, allLinks, title } = await extractPageContent(page, careersUrl, cb);
 
-    const bodyText = await page.innerText("body").catch(() => "");
-    const title = await page.title().catch(() => "");
+  // Build link dump for LLM — include ALL links so it can reason about which are jobs
+  const linkDump = allLinks
+    .map((l) => `${l.text} | ${l.href}`)
+    .join("\n")
+    .slice(0, 4000);
 
-    cb(`📄 Page loaded (${bodyText.length} chars). Asking LLM to extract jobs...`);
+  const prompt = `Extract all job listings from this careers page.
+Output ONLY a raw JSON array, nothing else. No markdown. No code fences. No explanation.
+Schema: [{"title":"<job title>","description":"<one sentence max>","link":"<apply URL>"}]
 
-    const prompt = `You are extracting job listings from a careers page.
-Return ONLY a JSON array. No markdown. No explanation.
-Each item: {"title":"...","description":"...","link":"..."}
-Empty array [] if no jobs found.
+Rules:
+- "title" must be an actual job title (e.g. "Software Engineer", "Head of Marketing")
+- Exclude navigation links, blog posts, events, generic "Apply" buttons without a title
+- Use the most specific apply/job URL available as "link"
+- If no real job listings exist, return []
 
-URL: ${careersUrl}
+Careers URL: ${careersUrl}
 Page title: ${title}
-Content (first 5000 chars):
-${bodyText.slice(0, 5000)}`;
 
-    const response = (await runtime.useModel(ModelType.TEXT_LARGE, { prompt })) as string;
+=== BODY TEXT (first 3000 chars) ===
+${bodyText.slice(0, 3000)}
 
-    let jobs: { title: string; description?: string; link?: string }[] = [];
-    const match = response.match(/\[[\s\S]*?\]/);
-    if (match) {
-      try { jobs = JSON.parse(match[0]); } catch { /* bad JSON */ }
+=== ALL LINKS ON PAGE (text | url) ===
+${linkDump}`;
+
+  cb("🤖 Asking LLM to extract jobs...");
+  const raw = (await runtime.useModel(ModelType.TEXT_LARGE, { prompt })) as string;
+  cb(`📝 LLM preview: ${raw.slice(0, 150)}`);
+
+  // Strip <think>...</think> from reasoning models (DeepSeek R1 etc.)
+  const stripped = raw
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/```json|```/g, "")
+    .trim();
+
+  let jobs: { title: string; description?: string; link?: string }[] = [];
+  const match = stripped.match(/\[[\s\S]*\]/);
+  if (match) {
+    try {
+      jobs = JSON.parse(match[0]);
+      // Sanity-filter: title must look like a job, not a URL or nav item
+      jobs = jobs.filter(
+        (j) =>
+          j.title &&
+          j.title.length > 3 &&
+          j.title.length < 120 &&
+          !j.title.startsWith("http") &&
+          !["cookie", "privacy", "terms", "home", "about", "blog"].some((bad) =>
+            j.title.toLowerCase().includes(bad)
+          )
+      );
+    } catch (e) {
+      cb(`⚠️  JSON parse error: ${(e as Error).message}`);
     }
-
-    if (jobs.length === 0) return { found: 0, stored: 0 };
-
-    const rows: JobRow[] = jobs.map((j) => ({
-      title: j.title,
-      description: j.description || "",
-      link: j.link || careersUrl,
-      company_name: companyName,
-      company_x_handle: xHandle,
-      company_website: companyWebsite,
-      source_url: careersUrl,
-    }));
-
-    const stored = await upsertJobs(rows);
-    return { found: jobs.length, stored };
-  } catch (err: any) {
-    cb(`⚠️  Job extraction error: ${err.message}`);
-    return { found: 0, stored: 0 };
   }
+
+  cb(`📊 LLM extracted: ${jobs.length} jobs`);
+
+  // Fallback: external job board links only (not same-domain)
+  if (jobs.length === 0) {
+    const careersHost = new URL(careersUrl).hostname;
+    const jobBoardLinks = allLinks.filter(({ href }) => {
+      try {
+        const host = new URL(href).hostname;
+        return host !== careersHost && JOB_BOARD_DOMAINS.some((d) => host.includes(d));
+      } catch { return false; }
+    });
+
+    if (jobBoardLinks.length > 0) {
+      cb(`🔁 Fallback: ${jobBoardLinks.length} external job board links`);
+      jobs = jobBoardLinks.map(({ href, text }) => ({
+        title: text || href.split("/").filter(Boolean).pop() || "Job Opening",
+        description: "",
+        link: href,
+      }));
+    }
+  }
+
+  return jobs;
 }
 
 // ─── Main Action ──────────────────────────────────────────────────────────────
 
 export const scrapeXProfile: Action = {
   name: "SCRAPE_X_PROFILE",
-  similes: [
-    "FIND_JOBS", "DISCOVER_JOBS", "CHECK_X_PROFILE",
-    "FIND_COMPANY_JOBS", "GET_JOBS_FROM_X",
-  ],
+  similes: ["FIND_JOBS", "DISCOVER_JOBS", "CHECK_X_PROFILE", "FIND_COMPANY_JOBS", "GET_JOBS_FROM_X"],
   description:
-    "Given an X profile URL, navigates to their website (handling linktr.ee and redirects), finds the careers page, extracts job listings, and stores them.",
+    "Given an X (Twitter) profile URL, finds job listings by: (1) extracting any jobs shown directly on the X profile, (2) navigating to the company website, (3) finding the careers page, (4) extracting and storing all job listings.",
 
   validate: async (_runtime, message) => {
     const text = message.content?.text || "";
@@ -229,93 +388,94 @@ export const scrapeXProfile: Action = {
 
     const urlMatch = text.match(/https?:\/\/(x\.com|twitter\.com)\/([A-Za-z0-9_]+)/);
     if (!urlMatch) {
-      cb("Please provide a valid X profile URL (e.g. https://x.com/monad).");
+      cb("Provide a valid X profile URL (e.g. https://x.com/arbitrum).");
       return { success: false, text: "No X profile URL found." };
     }
 
     const profileUrl = urlMatch[0];
     const handle = urlMatch[2];
     let displayName = handle;
-
     const page = await createPage();
 
     try {
       // ── 1. Load X profile ──────────────────────────────────────────────
       cb(`📍 Step 1 — Loading X profile: ${profileUrl}`);
       await page.goto(profileUrl, { timeout: 25000, waitUntil: "domcontentloaded" });
-      await waitAndSettle(page, 4000);
+      await settle(page, 4000);
 
-      // Login wall check
       const loginWall = await page.$('input[autocomplete="username"]').then(Boolean).catch(() => false);
       if (loginWall) {
         await page.close();
-        cb("⚠️ X is showing a login wall. Re-run: bun scripts/xLogin.ts");
+        cb("⚠️ Login wall. Re-run: bun scripts/xLogin.ts");
         return { success: false, text: "Login wall detected." };
       }
 
-      // Extract display name
       displayName = await page
         .$eval('[data-testid="UserName"] span', (el: any) => el.innerText.trim())
         .catch(() => handle);
 
-      // Extract bio
       const bio = await page
         .$eval('[data-testid="UserDescription"]', (el: any) => el.innerText.trim())
         .catch(() => "");
 
-      cb(`✅ Profile loaded: ${displayName} (@${handle})\n📝 ${bio || "(no bio)"}`);
+      cb(`✅ Profile: ${displayName} (@${handle})\n📝 ${bio || "(no bio)"}`);
 
-      // ── 2. Get the website link from profile ───────────────────────────
-      // X shows: Name / Handle / Bio / Location | Website | Joined
-      // The website field has data-testid="UserUrl"
-
-      let websiteUrl = "";
-
-      // Primary: dedicated website field
-      websiteUrl = await page
-        .$eval('[data-testid="UserUrl"] a', (el: any) => el.href)
-        .catch(() => "");
-
-      // Fallback A: any t.co link in the profile header area
-      if (!websiteUrl) {
-        const headerLinks: string[] = await page.$$eval(
-          '[data-testid="UserProfileHeader_Items"] a[href]',
-          (els: any[]) => els.map((a) => a.href)
-        ).catch(() => []);
-        websiteUrl = headerLinks.find((l) => !l.includes("x.com") && !l.includes("twitter.com")) || "";
+      // ── 1b. Extract jobs shown directly on X profile (Arbitrum-style) ──
+      cb(`🔍 Checking for jobs shown directly on X profile...`);
+      const xProfileJobs = await extractXProfileJobs(page, cb);
+      if (xProfileJobs.length > 0) {
+        cb(`🎯 Found ${xProfileJobs.length} jobs on X profile page itself — storing...`);
+        const rows: JobRow[] = xProfileJobs.map((j) => ({
+          ...j,
+          company_name: displayName,
+          company_x_handle: handle,
+          company_website: "",
+          source_url: profileUrl,
+        }));
+        const stored = await upsertJobs(rows);
+        cb(`✅ Stored ${stored} X-profile jobs. Continuing to find more from website...`);
       }
 
-      // Fallback B: any t.co link anywhere in the profile card
-      if (!websiteUrl) {
-        const allTco: string[] = await page.$$eval(
-          'a[href*="t.co"]',
-          (els: any[]) => els.map((a) => a.href)
-        ).catch(() => []);
-        websiteUrl = allTco[0] || "";
-      }
+      // ── 2. Get website link from X profile ────────────────────────────
+      const websiteUrl: string =
+        (await page.$eval('[data-testid="UserUrl"] a', (el: any) => el.href).catch(() => "")) ||
+        (await page
+          .$$eval('[data-testid="UserProfileHeader_Items"] a[href]', (els: any[]) =>
+            els.map((a) => a.href)
+          )
+          .catch(() => [])
+          .then((ls: string[]) =>
+            ls.find((l) => !l.includes("x.com") && !l.includes("twitter.com")) || ""
+          )) ||
+        (await page
+          .$$eval('a[href*="t.co"]', (els: any[]) => els.map((a) => a.href))
+          .catch(() => [])
+          .then((ls: string[]) => ls[0] || ""));
 
       if (!websiteUrl) {
         await page.close();
+        if (xProfileJobs.length > 0) {
+          cb(`⚠️  No website link on @${handle}, but stored ${xProfileJobs.length} X-profile jobs.`);
+          return { success: true, text: `Found ${xProfileJobs.length} jobs directly on @${handle}'s X profile.` };
+        }
         cb(`❌ No website link found on @${handle}'s profile.`);
         return { success: false, text: `No website link on @${handle}.` };
       }
 
-      cb(`🔗 Website link found: ${websiteUrl}`);
+      cb(`🔗 Website: ${websiteUrl}`);
 
-      // ── 3. Navigate to the link ────────────────────────────────────────
+      // ── 3. Navigate to website ─────────────────────────────────────────
       cb(`🌐 Step 2 — Navigating to: ${websiteUrl}`);
       await page.goto(websiteUrl, { timeout: 20000, waitUntil: "domcontentloaded" });
-      await waitAndSettle(page);
-
+      await settle(page);
       let currentUrl = page.url();
-      cb(`   Landed on: ${currentUrl}`);
+      cb(`   Landed: ${currentUrl}`);
 
-      // ── 4. Detect & resolve link aggregator ───────────────────────────
+      // ── 4. Resolve aggregator ──────────────────────────────────────────
       if (isAggregator(currentUrl)) {
         const officialSite = await resolveAggregator(page, currentUrl, cb);
-        cb(`🌐 Step 3 — Navigating to official site: ${officialSite}`);
         await page.goto(officialSite, { timeout: 20000, waitUntil: "domcontentloaded" });
-        await waitAndSettle(page);
+        await settle(page);
         currentUrl = page.url();
         cb(`   Now on: ${currentUrl}`);
       }
@@ -323,49 +483,61 @@ export const scrapeXProfile: Action = {
       const officialWebsite = currentUrl;
 
       // ── 5. Find careers page ───────────────────────────────────────────
-      cb(`🔍 Step 4 — Searching for careers page on ${new URL(officialWebsite).hostname}`);
+      cb(`🔍 Step 4 — Looking for careers page on ${new URL(officialWebsite).hostname}`);
 
-      // First check if we're already on a careers page
       let careersUrl: string | null = null;
       if (isCareersUrl(officialWebsite)) {
         careersUrl = officialWebsite;
         cb(`   Already on careers page!`);
       } else {
-        careersUrl = await findCareersLink(page);
+        careersUrl = await findCareersLink(runtime, page, officialWebsite, cb);
       }
 
       if (!careersUrl) {
         await page.close();
-        cb(`❌ No careers page found on ${officialWebsite}.`);
-        return {
-          success: false,
-          text: `Could not find a careers page for ${displayName} at ${officialWebsite}.`,
-        };
+        const summary = xProfileJobs.length > 0
+          ? `No careers page found, but stored ${xProfileJobs.length} jobs from X profile.`
+          : `No careers page found for ${displayName} at ${officialWebsite}.`;
+        cb(`❌ ${summary}`);
+        return { success: xProfileJobs.length > 0, text: summary };
       }
 
-      cb(`✅ Careers page found: ${careersUrl}`);
+      cb(`✅ Careers page: ${careersUrl}`);
 
-      // ── 6. Extract & store jobs ────────────────────────────────────────
-      cb(`📋 Step 5 — Extracting job listings...`);
-      const { found, stored } = await extractAndStoreJobs(
-        runtime, page, careersUrl, displayName, handle, officialWebsite, cb
-      );
+      // ── 6. Extract & store jobs from careers page ──────────────────────
+      cb(`📋 Step 5 — Extracting jobs from careers page...`);
+      const jobs = await extractJobsFromPage(runtime, page, careersUrl, cb);
 
       await page.close();
 
-      if (found === 0) {
-        cb(`⚠️  Careers page found but no job listings extracted from ${careersUrl}.`);
-        return {
-          success: true,
-          text: `Found careers page for ${displayName} (${careersUrl}) but no job listings extracted.`,
-        };
+      const totalFound = xProfileJobs.length + jobs.length;
+
+      if (jobs.length === 0) {
+        const summary = xProfileJobs.length > 0
+          ? `No additional jobs on careers page, but already stored ${xProfileJobs.length} from X profile.`
+          : `Found careers page (${careersUrl}) but no jobs extracted.`;
+        cb(`⚠️  ${summary}`);
+        return { success: true, text: summary };
       }
 
-      cb(`🎉 Done! ${displayName} — ${found} jobs found, ${stored} new stored in database.`);
+      const rows: JobRow[] = jobs.map((j) => ({
+        title: j.title,
+        description: j.description || "",
+        link: j.link || careersUrl!,
+        company_name: displayName,
+        company_x_handle: handle,
+        company_website: officialWebsite,
+        source_url: careersUrl!,
+      }));
+
+      cb(`💾 Upserting ${rows.length} jobs to DB...`);
+      const stored = await upsertJobs(rows);
+
+      cb(`🎉 ${displayName} — ${totalFound} total jobs found, ${stored} new from careers page stored.`);
       return {
         success: true,
-        text: `✅ Job discovery complete for ${displayName} (@${handle}). Found ${found} jobs, stored ${stored}. Careers: ${careersUrl}`,
-        data: { companyName: displayName, xHandle: handle, website: officialWebsite, careersUrl, jobsFound: found, jobsStored: stored },
+        text: `✅ ${displayName} (@${handle}): found ${totalFound} jobs total, ${stored} stored from careers page. Careers: ${careersUrl}`,
+        data: { companyName: displayName, xHandle: handle, website: officialWebsite, careersUrl, jobsFound: totalFound, jobsStored: stored },
       };
 
     } catch (err: any) {
@@ -377,24 +549,12 @@ export const scrapeXProfile: Action = {
 
   examples: [
     [
-      { name: "user", content: { text: "Find jobs from https://x.com/monad" } },
-      {
-        name: "agent",
-        content: {
-          text: "Starting job discovery for @monad — navigating their X profile to find the website and careers page.",
-          action: "SCRAPE_X_PROFILE",
-        },
-      },
+      { name: "user", content: { text: "Find jobs from https://x.com/arbitrum" } },
+      { name: "agent", content: { text: "Starting job discovery for @arbitrum.", action: "SCRAPE_X_PROFILE" } },
     ],
     [
-      { name: "user", content: { text: "https://x.com/solana find jobs" } },
-      {
-        name: "agent",
-        content: {
-          text: "On it — scraping @solana's profile to find job listings.",
-          action: "SCRAPE_X_PROFILE",
-        },
-      },
+      { name: "user", content: { text: "https://x.com/Optimism find jobs" } },
+      { name: "agent", content: { text: "On it — scraping @Optimism's profile.", action: "SCRAPE_X_PROFILE" } },
     ],
   ],
 };

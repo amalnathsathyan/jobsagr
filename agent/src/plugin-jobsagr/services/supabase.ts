@@ -31,15 +31,75 @@ export async function upsertJobs(jobs: JobRow[]): Promise<number> {
   if (jobs.length === 0) return 0;
 
   const supabase = getSupabase();
+
+  // Strategy 1: bulk upsert (requires unique index on title,link to exist)
   const { data, error } = await supabase
     .from("jobs")
-    .upsert(jobs, { onConflict: "title,company_name,link", ignoreDuplicates: true })
-    .select();
+    .upsert(jobs, { onConflict: "title,link", ignoreDuplicates: true })
+    .select("id");
 
-  if (error) {
-    console.error("Supabase upsert error:", error.message);
-    return 0;
+  if (!error) {
+    console.log(`✅ Upserted ${data?.length ?? 0} rows`);
+    return data?.length ?? 0;
   }
 
-  return data?.length ?? 0;
+  console.warn(`⚠️  Bulk upsert failed: ${error.message}`);
+  console.warn("⚠️  Falling back to row-by-row insert...");
+
+  // Strategy 2: insert each row individually, skip duplicates/column errors gracefully
+  let stored = 0;
+
+  for (const job of jobs) {
+    // Build full row
+    const fullRow: Record<string, unknown> = {
+      title: job.title,
+      ...(job.description !== undefined && { description: job.description }),
+      ...(job.link !== undefined && { link: job.link }),
+      ...(job.source_url !== undefined && { source_url: job.source_url }),
+      ...(job.company_name !== undefined && { company_name: job.company_name }),
+      ...(job.company_x_handle !== undefined && { company_x_handle: job.company_x_handle }),
+      ...(job.company_website !== undefined && { company_website: job.company_website }),
+    };
+
+    const { error: err1 } = await supabase.from("jobs").insert(fullRow);
+
+    if (!err1) { stored++; continue; }
+
+    // Column doesn't exist → retry with only base columns
+    if (err1.message.includes("column") || err1.message.includes("schema cache")) {
+      const baseRow = {
+        title: job.title,
+        ...(job.description !== undefined && { description: job.description }),
+        ...(job.link !== undefined && { link: job.link }),
+      };
+      const { error: err2 } = await supabase.from("jobs").insert(baseRow);
+      if (!err2) { stored++; continue; }
+      // Ignore duplicate key violations silently
+      if (!err2.message.includes("duplicate") && !err2.message.includes("unique")) {
+        console.error(`  ❌ "${job.title}": ${err2.message}`);
+      }
+      continue;
+    }
+
+    // Duplicate key → already exists, not an error
+    if (err1.message.includes("duplicate") || err1.message.includes("unique")) continue;
+
+    console.error(`  ❌ "${job.title}": ${err1.message}`);
+  }
+
+  if (stored === 0 && jobs.length > 0) {
+    console.error(`\n🔴 0 rows stored. Run this SQL in Supabase and retry:\n
+ALTER TABLE jobs
+  ADD COLUMN IF NOT EXISTS company_name text,
+  ADD COLUMN IF NOT EXISTS company_x_handle text,
+  ADD COLUMN IF NOT EXISTS company_website text,
+  ADD COLUMN IF NOT EXISTS source_url text;
+
+CREATE UNIQUE INDEX IF NOT EXISTS jobs_title_link_unique ON jobs (title, link);
+`);
+  } else {
+    console.log(`✅ Inserted ${stored}/${jobs.length} rows via fallback`);
+  }
+
+  return stored;
 }

@@ -1,9 +1,0 @@
-# Seed X profile URLs for job discovery
-# Lines starting with # are ignored
-# Add company X profiles below — the agent will scrape these for career pages
-
-https://x.com/arbitrum
-https://x.com/nosaboratory
-https://x.com/solaboratory
-https://x.com/uaboratory
-https://x.com/aboratory
