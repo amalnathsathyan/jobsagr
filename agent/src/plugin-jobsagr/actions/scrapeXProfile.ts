@@ -5,7 +5,7 @@ const COMPANY_SIGNALS = [
   "hiring", "building", "we are", "careers at", "team",
   "inc", "ltd", "corp", "foundation", "protocol", "labs",
   "dao", "network", "platform", "solutions", "ventures",
-  "join us", "open roles", "we're hiring",
+  "join us", "open roles", "we're hiring", "layer", "blockchain", "throughput"
 ];
 
 export const scrapeXProfile: Action = {
@@ -47,7 +47,7 @@ export const scrapeXProfile: Action = {
       const handle = profileUrl.split("/").pop() || "";
 
       const isCompany =
-        COMPANY_SIGNALS.some((s) => bio.toLowerCase().includes(s)) || !!website;
+        COMPANY_SIGNALS.some((s) => bio.toLowerCase().includes(s)) || true;
 
       await page.close();
 
@@ -79,7 +79,7 @@ export const scrapeXProfile: Action = {
         },
       };
     } catch (err: any) {
-      await page?.close().catch(() => {});
+      await page?.close().catch(() => { });
       return {
         success: false,
         text: `Failed to scrape X profile: ${err.message}`,
