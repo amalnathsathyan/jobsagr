@@ -3,28 +3,28 @@
 import { useEffect, useState, useMemo } from "react";
 import { supabase, type Job } from "@/lib/db";
 
+/* ─── Helpers ─────────────────────────────────────────── */
 function timeAgo(dateStr: string): string {
-  const seconds = Math.floor(
-    (Date.now() - new Date(dateStr).getTime()) / 1000
-  );
+  const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
   if (seconds < 60) return "just now";
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
   return `${Math.floor(seconds / 86400)}d ago`;
 }
 
+/* ─── Icons ────────────────────────────────────────────── */
 function SearchIcon() {
   return (
     <svg
-      width="20"
-      height="20"
+      width="15"
+      height="15"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
       strokeWidth="2"
       strokeLinecap="round"
       strokeLinejoin="round"
-      style={{ color: "var(--text-muted)" }}
+      style={{ color: "var(--text-3)" }}
     >
       <circle cx="11" cy="11" r="8" />
       <path d="m21 21-4.35-4.35" />
@@ -32,15 +32,15 @@ function SearchIcon() {
   );
 }
 
-function ExternalLinkIcon() {
+function ExternalIcon() {
   return (
     <svg
-      width="14"
-      height="14"
+      width="10"
+      height="10"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="2"
+      strokeWidth="2.5"
       strokeLinecap="round"
       strokeLinejoin="round"
     >
@@ -51,356 +51,299 @@ function ExternalLinkIcon() {
   );
 }
 
-function BriefcaseIcon() {
+/* ─── Skeleton ─────────────────────────────────────────── */
+function SkeletonGrid() {
   return (
-    <svg
-      width="64"
-      height="64"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <rect x="2" y="7" width="20" height="14" rx="2" ry="2" />
-      <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" />
-    </svg>
+    <div className="flex flex-col gap-3">
+      {Array.from({ length: 6 }).map((_, i) => (
+        <div key={i} className="skeleton" />
+      ))}
+    </div>
   );
 }
 
+/* ─── Empty state ──────────────────────────────────────── */
+function EmptyState({ filtered }: { filtered: boolean }) {
+  return (
+    <div className="flex flex-col items-center justify-center py-24 text-center gap-3">
+      <div
+        className="w-10 h-10 flex items-center justify-center"
+        style={{ background: "var(--bg-surface)", border: "1px solid var(--border)" }}
+      >
+        <svg
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          style={{ color: "var(--text-3)" }}
+        >
+          <rect x="2" y="7" width="20" height="14" rx="2" ry="2" />
+          <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" />
+        </svg>
+      </div>
+      <p className="text-sm font-medium" style={{ color: "var(--text-2)" }}>
+        {filtered ? "No matching jobs found" : "No jobs discovered yet"}
+      </p>
+      <p className="text-xs max-w-xs leading-relaxed" style={{ color: "var(--text-3)" }}>
+        {filtered
+          ? "Try adjusting your search or clearing the filters."
+          : "The agent is scanning company profiles. Jobs will appear here automatically."}
+      </p>
+    </div>
+  );
+}
+
+/* ─── Job Card ─────────────────────────────────────────── */
+function JobCard({ job, index }: { job: Job; index: number }) {
+  return (
+    <div
+      className="job-card animate-in"
+      style={{ animationDelay: `${index * 40}ms` }}
+    >
+      {/* Header row */}
+      <div className="flex items-start justify-between gap-2">
+        {job.company_name && (
+          <span className="co-badge">{job.company_name}</span>
+        )}
+        <span
+          className="text-xs shrink-0 font-mono"
+          style={{ color: "var(--text-3)" }}
+        >
+          {timeAgo(job.scraped_at)}
+        </span>
+      </div>
+
+      {/* Title */}
+      <h3
+        className="text-sm font-semibold leading-snug tracking-tight"
+        style={{ color: "var(--text-1)" }}
+      >
+        {job.title}
+      </h3>
+
+      {/* Description */}
+      {job.description && (
+        <p
+          className="text-xs leading-relaxed line-clamp-2"
+          style={{ color: "var(--text-2)" }}
+        >
+          {job.description}
+        </p>
+      )}
+
+      {/* Footer */}
+      {job.link && (
+        <div className="flex items-center justify-end">
+          <a
+            href={job.link}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="apply-btn"
+          >
+            Apply <ExternalIcon />
+          </a>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Page ─────────────────────────────────────────────── */
 export default function Home() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [selectedCompany, setSelectedCompany] = useState<string | null>(null);
 
-  // Fetch jobs from Supabase
+  /* Fetch + realtime */
   useEffect(() => {
     async function fetchJobs() {
       const { data, error } = await supabase
         .from("jobs")
         .select("*")
         .order("scraped_at", { ascending: false });
-
-      if (!error && data) {
-        setJobs(data);
-      }
+      if (!error && data) setJobs(data);
       setLoading(false);
     }
-
     fetchJobs();
 
-    // Real-time subscription
     const channel = supabase
       .channel("jobs-realtime")
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "jobs" },
-        (payload) => {
-          setJobs((prev) => [payload.new as Job, ...prev]);
-        }
+        (payload) => setJobs((prev) => [payload.new as Job, ...prev])
       )
       .subscribe();
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    return () => { supabase.removeChannel(channel); };
   }, []);
 
-  // Derive unique companies
+  /* Derived */
   const companies = useMemo(() => {
     const set = new Set(jobs.map((j) => j.company_name).filter(Boolean));
     return Array.from(set).sort() as string[];
   }, [jobs]);
 
-  // Filter jobs
   const filtered = useMemo(() => {
+    const q = search.toLowerCase();
     return jobs.filter((job) => {
-      const matchesSearch =
-        !search ||
-        job.title.toLowerCase().includes(search.toLowerCase()) ||
-        (job.description?.toLowerCase().includes(search.toLowerCase()) ?? false) ||
-        (job.company_name?.toLowerCase().includes(search.toLowerCase()) ?? false);
-
-      const matchesCompany =
-        !selectedCompany || job.company_name === selectedCompany;
-
-      return matchesSearch && matchesCompany;
+      const matchSearch =
+        !q ||
+        job.title.toLowerCase().includes(q) ||
+        (job.description?.toLowerCase().includes(q) ?? false) ||
+        (job.company_name?.toLowerCase().includes(q) ?? false);
+      const matchCompany = !selectedCompany || job.company_name === selectedCompany;
+      return matchSearch && matchCompany;
     });
   }, [jobs, search, selectedCompany]);
 
+  const isFiltered = !!(search || selectedCompany);
+
+  /* ── Render ── */
   return (
-    <div style={{ minHeight: "100vh" }}>
-      {/* Hero Section */}
-      <header className="hero-bg" style={{ padding: "80px 24px 40px", position: "relative" }}>
-        <div style={{ maxWidth: 1000, margin: "0 auto", position: "relative", zIndex: 1 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-            <div className="pulse-dot" />
-            <span className="badge badge-teal">Live • Auto-updating</span>
-          </div>
+    <div className="min-h-screen" style={{ background: "var(--bg)" }}>
 
-          <h1
-            style={{
-              fontSize: "clamp(2rem, 5vw, 3.5rem)",
-              fontWeight: 800,
-              lineHeight: 1.1,
-              marginBottom: 16,
-              letterSpacing: "-0.03em",
-            }}
+      {/* ── Header ── */}
+      <header className="max-w-4xl mx-auto px-6 pt-14 pb-0 flex flex-col items-center text-center">
+
+        {/* Live badge */}
+        <div className="flex items-center gap-2 mb-5">
+          <span className="live-dot" />
+          <span
+            className="text-xs font-mono tracking-widest uppercase"
+            style={{ color: "var(--lime-dim)" }}
           >
-            <span className="gradient-text">JobsAgr</span>
-          </h1>
+            Live · Auto-updating
+          </span>
+        </div>
 
-          <p
-            style={{
-              fontSize: "1.15rem",
-              color: "var(--text-secondary)",
-              maxWidth: 560,
-              lineHeight: 1.6,
-              marginBottom: 8,
-            }}
-          >
-            AI-powered job discovery — an ElizaOS agent autonomously scrapes
-            company X profiles, finds career pages, and surfaces opportunities
-            here in real-time.
-          </p>
+        {/* Wordmark */}
+        <h1
+          className="text-5xl font-bold tracking-tighter leading-none mb-3"
+          style={{ color: "var(--text-1)", fontFamily: "var(--font-ubuntu)" }}
+        >
+          Jobs<span style={{ color: "var(--lime)" }}>Agr</span>
+        </h1>
 
-          <p
-            style={{
-              fontSize: "0.85rem",
-              color: "var(--text-muted)",
-              marginBottom: 32,
-            }}
-          >
-            Powered by{" "}
-            <span style={{ color: "var(--accent-purple)" }}>ElizaOS</span> ×{" "}
-            <span style={{ color: "var(--accent-teal)" }}>Nosana</span>{" "}
-            decentralized compute
-          </p>
+        {/* Tagline */}
+        <p
+          className="text-sm leading-relaxed max-w-md mb-2"
+          style={{ color: "var(--text-2)" }}
+        >
+          An ElizaOS agent autonomously scrapes company profiles, finds career
+          pages, and surfaces opportunities in real-time.
+        </p>
 
-          {/* Search */}
-          <div style={{ position: "relative", maxWidth: 480 }}>
-            <div
-              style={{
-                position: "absolute",
-                left: 14,
-                top: "50%",
-                transform: "translateY(-50%)",
-              }}
-            >
-              <SearchIcon />
-            </div>
-            <input
-              id="search-jobs"
-              className="search-input"
-              type="text"
-              placeholder="Search jobs, companies..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-          </div>
+        {/* Powered by */}
+        <p
+          className="text-xs font-mono mb-8"
+          style={{ color: "var(--text-3)" }}
+        >
+          Powered by{" "}
+          <span style={{ color: "var(--text-2)" }}>ElizaOS</span>
+          {" × "}
+          <span style={{ color: "var(--text-2)" }}>Nosana</span>{" "}
+          decentralized compute
+        </p>
+
+        {/* Search */}
+        <div className="relative w-full max-w-sm">
+          <span className="absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none">
+            <SearchIcon />
+          </span>
+          <input
+            className="search-input"
+            type="text"
+            placeholder="Search roles, companies, keywords…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
         </div>
       </header>
 
-      {/* Main Content */}
-      <main style={{ maxWidth: 1000, margin: "0 auto", padding: "0 24px 80px" }}>
-        {/* Company Filters */}
-        {companies.length > 0 && (
-          <div
-            style={{
-              display: "flex",
-              gap: 8,
-              flexWrap: "wrap",
-              marginBottom: 32,
-              paddingTop: 8,
-            }}
-          >
-            <button
-              className={`filter-btn ${!selectedCompany ? "active" : ""}`}
-              onClick={() => setSelectedCompany(null)}
-            >
-              All ({jobs.length})
-            </button>
-            {companies.map((company) => {
-              const count = jobs.filter((j) => j.company_name === company).length;
-              return (
-                <button
-                  key={company}
-                  className={`filter-btn ${selectedCompany === company ? "active" : ""}`}
-                  onClick={() =>
-                    setSelectedCompany(
-                      selectedCompany === company ? null : company
-                    )
-                  }
-                >
-                  {company} ({count})
-                </button>
-              );
-            })}
-          </div>
-        )}
+      {/* ── Body ── */}
+      <main className="max-w-4xl mx-auto px-6 pb-20">
 
-        {/* Stats Bar */}
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            marginBottom: 20,
-            fontSize: "0.85rem",
-            color: "var(--text-muted)",
-          }}
-        >
-          <span>
-            {loading
-              ? "Loading..."
-              : `${filtered.length} ${filtered.length === 1 ? "opportunity" : "opportunities"} found`}
-          </span>
-          {jobs.length > 0 && (
-            <span>
-              Last updated: {timeAgo(jobs[0].scraped_at)}
-            </span>
+        {/* Toolbar: filters + count */}
+        <div className="flex flex-col items-center justify-center gap-4 py-5">
+
+          {/* Company filters */}
+          {companies.length > 0 && (
+            <div className="flex justify-center gap-1.5 flex-wrap w-full">
+              <button
+                className={`filter-btn ${!selectedCompany ? "active" : ""}`}
+                onClick={() => setSelectedCompany(null)}
+              >
+                All{jobs.length > 0 && ` (${jobs.length})`}
+              </button>
+              {companies.map((co) => {
+                const n = jobs.filter((j) => j.company_name === co).length;
+                return (
+                  <button
+                    key={co}
+                    className={`filter-btn ${selectedCompany === co ? "active" : ""}`}
+                    onClick={() =>
+                      setSelectedCompany(selectedCompany === co ? null : co)
+                    }
+                  >
+                    {co} ({n})
+                  </button>
+                );
+              })}
+            </div>
           )}
+
+          {/* Meta */}
+          <div className="text-center">
+            <span
+              className="text-xs font-mono"
+              style={{ color: "var(--text-3)" }}
+            >
+            {loading ? (
+              "Loading…"
+            ) : (
+              <>
+                <span style={{ color: "var(--text-2)" }}>{filtered.length}</span>{" "}
+                {filtered.length === 1 ? "role" : "roles"}
+                {jobs.length > 0 && (
+                  <> · updated {timeAgo(jobs[0].scraped_at)}</>
+                )}
+              </>
+            )}
+            </span>
+          </div>
         </div>
 
-        {/* Job Grid */}
+        {/* Divider */}
+        <div style={{ height: "1px", background: "var(--border)", marginBottom: "20px" }} />
+
+        {/* Grid */}
         {loading ? (
-          <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))" }}>
-            {[1, 2, 3, 4, 5, 6].map((i) => (
-              <div
-                key={i}
-                className="glass-card"
-                style={{
-                  padding: 24,
-                  height: 160,
-                  background: "var(--bg-card)",
-                  animation: `pulse 1.5s ease-in-out infinite`,
-                  opacity: 0.5,
-                }}
-              />
-            ))}
-          </div>
+          <SkeletonGrid />
         ) : filtered.length === 0 ? (
-          <div className="empty-state">
-            <BriefcaseIcon />
-            <h3 style={{ fontSize: "1.2rem", marginBottom: 8, color: "var(--text-secondary)" }}>
-              {search || selectedCompany
-                ? "No matching jobs found"
-                : "No jobs discovered yet"}
-            </h3>
-            <p style={{ fontSize: "0.9rem" }}>
-              {search || selectedCompany
-                ? "Try adjusting your search or filters."
-                : "The agent is scanning company profiles. Jobs will appear here in real-time."}
-            </p>
-          </div>
+          <EmptyState filtered={isFiltered} />
         ) : (
-          <div
-            style={{
-              display: "grid",
-              gap: 16,
-              gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))",
-            }}
-          >
+          <div className="flex flex-col gap-3">
             {filtered.map((job, i) => (
-              <div
-                key={job.id}
-                className="glass-card animate-in"
-                style={{
-                  padding: 24,
-                  animationDelay: `${i * 50}ms`,
-                  display: "flex",
-                  flexDirection: "column",
-                  justifyContent: "space-between",
-                  minHeight: 160,
-                }}
-              >
-                <div>
-                  {/* Company */}
-                  {job.company_name && (
-                    <span
-                      className="badge badge-purple"
-                      style={{ marginBottom: 12, display: "inline-flex" }}
-                    >
-                      {job.company_name}
-                    </span>
-                  )}
-
-                  {/* Title */}
-                  <h3
-                    style={{
-                      fontSize: "1.05rem",
-                      fontWeight: 600,
-                      lineHeight: 1.3,
-                      marginBottom: 8,
-                      color: "var(--text-primary)",
-                    }}
-                  >
-                    {job.title}
-                  </h3>
-
-                  {/* Description */}
-                  {job.description && (
-                    <p
-                      style={{
-                        fontSize: "0.85rem",
-                        color: "var(--text-secondary)",
-                        lineHeight: 1.5,
-                        marginBottom: 12,
-                      }}
-                    >
-                      {job.description}
-                    </p>
-                  )}
-                </div>
-
-                {/* Footer */}
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    marginTop: 8,
-                  }}
-                >
-                  {job.link && (
-                    <a
-                      href={job.link}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="external-link"
-                    >
-                      Apply <ExternalLinkIcon />
-                    </a>
-                  )}
-                  <span
-                    style={{
-                      fontSize: "0.75rem",
-                      color: "var(--text-muted)",
-                    }}
-                  >
-                    {timeAgo(job.scraped_at)}
-                  </span>
-                </div>
-              </div>
+              <JobCard key={job.id} job={job} index={i} />
             ))}
           </div>
         )}
       </main>
 
-      {/* Footer */}
+      {/* ── Footer ── */}
       <footer
+        className="text-center text-xs font-mono py-6 px-6"
         style={{
-          borderTop: "1px solid var(--border-subtle)",
-          padding: "24px",
-          textAlign: "center",
-          fontSize: "0.8rem",
-          color: "var(--text-muted)",
-          marginTop: "auto",
+          borderTop: "1px solid var(--border)",
+          color: "var(--text-3)",
+          letterSpacing: "0.03em",
         }}
       >
-        Built with ElizaOS × Nosana for the Nosana Builders&apos; Challenge
+        Built with ElizaOS × Nosana
       </footer>
     </div>
   );

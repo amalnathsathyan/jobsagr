@@ -1,9 +1,16 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Inter, Ubuntu } from "next/font/google";
 import "./globals.css";
 
 const inter = Inter({
   variable: "--font-inter",
+  subsets: ["latin"],
+  display: "swap",
+});
+
+const ubuntu = Ubuntu({
+  weight: ["400", "500", "700"],
+  variable: "--font-ubuntu",
   subsets: ["latin"],
   display: "swap",
 });
@@ -21,7 +28,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${inter.variable} antialiased`}>
+    <html lang="en" className={`${inter.variable} ${ubuntu.variable} antialiased`}>
       <body className="min-h-screen flex flex-col">{children}</body>
     </html>
   );
