@@ -25,6 +25,10 @@ export interface JobRow {
   company_x_handle?: string;
   company_website?: string;
   source_url?: string;
+  category?: string;
+  summary?: string;
+  content_hash?: string;
+  canonical_url?: string;
 }
 
 export async function upsertJobs(jobs: JobRow[]): Promise<number> {
@@ -59,6 +63,10 @@ export async function upsertJobs(jobs: JobRow[]): Promise<number> {
       ...(job.company_name !== undefined && { company_name: job.company_name }),
       ...(job.company_x_handle !== undefined && { company_x_handle: job.company_x_handle }),
       ...(job.company_website !== undefined && { company_website: job.company_website }),
+      ...(job.category !== undefined && { category: job.category }),
+      ...(job.summary !== undefined && { summary: job.summary }),
+      ...(job.content_hash !== undefined && { content_hash: job.content_hash }),
+      ...(job.canonical_url !== undefined && { canonical_url: job.canonical_url }),
     };
 
     const { error: err1 } = await supabase.from("jobs").insert(fullRow);

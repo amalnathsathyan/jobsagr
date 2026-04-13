@@ -1,19 +1,24 @@
 /**
  * SCRAPE_X_PROFILE
  *
- * Pipeline:
+ * Full pipeline (all 5 action files integrated):
  * 1. Load X profile → extract jobs shown directly on X (e.g. Arbitrum "We're Hiring")
  * 2. Get website link → navigate to it
- * 3. Handle aggregators
- * 4. Find careers page (smart: link scoring + path guessing + LLM-assisted)
- * 5. Extract jobs from careers page (networkidle + full link dump to LLM)
- * 6. Store in Supabase
+ * 3. Handle link aggregators (Linktree, etc.)
+ * 4. Find careers page (link scoring + path guessing + LLM-assisted)
+ * 5. BFS-crawl careers page for individual job URLs (crawlCareerListings)
+ * 6. Extract structured details per job page (extractJobDetail) — title, summary, category
+ * 7. Store enriched jobs in Supabase
+ *
+ * Fallback: if BFS finds no individual job URLs, uses single-page LLM extraction
  */
 
 import { type Action, type IAgentRuntime, ModelType } from "@elizaos/core";
 import { type Page } from "playwright";
 import { createPage } from "../services/browser.js";
 import { upsertJobs, type JobRow } from "../services/supabase.js";
+import { crawlCareerListings } from "./crawlCareerListings.js";
+import { extractJobDetail } from "./extractJobDetail.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -504,15 +509,69 @@ export const scrapeXProfile: Action = {
 
       cb(`✅ Careers page: ${careersUrl}`);
 
-      // ── 6. Extract & store jobs from careers page ──────────────────────
-      cb(`📋 Step 5 — Extracting jobs from careers page...`);
-      const jobs = await extractJobsFromPage(runtime, page, careersUrl, cb);
+      // ── 6. Crawl careers page for individual job URLs ──────────────────
+      cb(`📋 Step 5 — Crawling careers page for individual job URLs...`);
+      await page.close(); // done with the navigation page
 
-      await page.close();
+      const jobUrls = await crawlCareerListings(careersUrl!, cb);
+      let careersPageJobs: JobRow[] = [];
 
-      const totalFound = xProfileJobs.length + jobs.length;
+      if (jobUrls.length > 0) {
+        // ── 7. Extract structured details from each job URL ──────────────
+        const BATCH_SIZE = 3;
+        const MAX_DETAIL_PAGES = 20;
+        const urlsToProcess = jobUrls.slice(0, MAX_DETAIL_PAGES);
+        cb(`🔬 Step 6 — Extracting details from ${urlsToProcess.length} job pages (batches of ${BATCH_SIZE})...`);
 
-      if (jobs.length === 0) {
+        for (let i = 0; i < urlsToProcess.length; i += BATCH_SIZE) {
+          const batch = urlsToProcess.slice(i, i + BATCH_SIZE);
+          const results = await Promise.allSettled(
+            batch.map((url) => extractJobDetail(runtime, url))
+          );
+
+          for (const result of results) {
+            if (result.status === "fulfilled" && result.value) {
+              const d = result.value;
+              careersPageJobs.push({
+                title: d.title,
+                description: d.description,
+                summary: d.summary,
+                category: d.category,
+                content_hash: d.content_hash,
+                canonical_url: d.canonical_url,
+                link: d.apply_url,
+                company_name: displayName,
+                company_x_handle: handle,
+                company_website: officialWebsite,
+                source_url: careersUrl!,
+              });
+            }
+          }
+          cb(`  ✅ Batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(urlsToProcess.length / BATCH_SIZE)}: ${careersPageJobs.length} jobs extracted so far`);
+        }
+      }
+
+      // Fallback: if crawler found no individual job URLs, try single-page LLM extraction
+      if (careersPageJobs.length === 0) {
+        cb(`⚠️  No jobs from crawler — falling back to page-level LLM extraction...`);
+        const fallbackPage = await createPage();
+        const fallbackJobs = await extractJobsFromPage(runtime, fallbackPage, careersUrl!, cb);
+        await fallbackPage.close();
+
+        careersPageJobs = fallbackJobs.map((j) => ({
+          title: j.title,
+          description: j.description || "",
+          link: j.link || careersUrl!,
+          company_name: displayName,
+          company_x_handle: handle,
+          company_website: officialWebsite,
+          source_url: careersUrl!,
+        }));
+      }
+
+      const totalFound = xProfileJobs.length + careersPageJobs.length;
+
+      if (careersPageJobs.length === 0) {
         const summary = xProfileJobs.length > 0
           ? `No additional jobs on careers page, but already stored ${xProfileJobs.length} from X profile.`
           : `Found careers page (${careersUrl}) but no jobs extracted.`;
@@ -520,18 +579,8 @@ export const scrapeXProfile: Action = {
         return { success: true, text: summary };
       }
 
-      const rows: JobRow[] = jobs.map((j) => ({
-        title: j.title,
-        description: j.description || "",
-        link: j.link || careersUrl!,
-        company_name: displayName,
-        company_x_handle: handle,
-        company_website: officialWebsite,
-        source_url: careersUrl!,
-      }));
-
-      cb(`💾 Upserting ${rows.length} jobs to DB...`);
-      const stored = await upsertJobs(rows);
+      cb(`💾 Upserting ${careersPageJobs.length} jobs to DB...`);
+      const stored = await upsertJobs(careersPageJobs);
 
       cb(`🎉 ${displayName} — ${totalFound} total jobs found, ${stored} new from careers page stored.`);
       return {
