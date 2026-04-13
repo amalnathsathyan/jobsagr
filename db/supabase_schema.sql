@@ -1,21 +1,25 @@
--- JobsAgr Supabase Schema (reference — already applied)
--- Run this in Supabase SQL editor if not already done.
+-- WARNING: This schema is for context only and is not meant to be run.
+-- Table order and constraints may not be valid for execution.
 
-CREATE TABLE IF NOT EXISTS jobs (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  title TEXT NOT NULL,
-  description TEXT,
-  link TEXT,
-  company_name TEXT,
-  company_x_handle TEXT,
-  company_website TEXT,
-  source_url TEXT,
-  scraped_at TIMESTAMPTZ DEFAULT NOW(),
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  UNIQUE(title, company_name, link)
+CREATE TABLE public.jobs (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  title text NOT NULL,
+  description text,
+  link text NOT NULL,
+  company text,
+  source_url text,
+  scraped_at timestamp with time zone DEFAULT now(),
+  company_name text,
+  company_x_handle text,
+  company_website text,
+  summary text,
+  category text,
+  canonical_url text,
+  content_hash text,
+  CONSTRAINT jobs_pkey PRIMARY KEY (id)
 );
-
--- RLS: anyone can read, service_role can write
-ALTER TABLE jobs ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "Public read" ON jobs FOR SELECT USING (true);
-CREATE POLICY "Service write" ON jobs FOR INSERT WITH CHECK (true);
+CREATE TABLE public.scanned_profiles (
+  url text NOT NULL,
+  last_scanned timestamp with time zone,
+  CONSTRAINT scanned_profiles_pkey PRIMARY KEY (url)
+);
