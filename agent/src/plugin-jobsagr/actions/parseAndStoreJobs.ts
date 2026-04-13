@@ -7,11 +7,18 @@ export const parseAndStoreJobs: Action = {
   similes: ["EXTRACT_JOBS", "STORE_JOBS", "SCRAPE_CAREERS"],
   description:
     "Scrapes a careers/jobs page, uses LLM to extract structured job listings (title, description, link), and stores them in Supabase.",
+
+  // FIX: exclude X/Twitter URLs — those go to SCRAPE_X_PROFILE instead.
+  // Also exclude any URL that looks like it already has an x.com/twitter.com handle.
   validate: async (_runtime, message) => {
     const text = message.content?.text || "";
-    return text.includes("http");
+    if (!text.includes("http")) return false;
+    if (text.includes("x.com") || text.includes("twitter.com")) return false;
+    return true;
   },
-  handler: async (runtime: IAgentRuntime, message) => {
+
+  handler: async (runtime: IAgentRuntime, message, _state, _options, callback) => {
+    const cb = (msg: string) => callback?.({ text: msg });
     const text = message.content?.text || "";
     const urlMatch = text.match(/https?:\/\/[^\s]+/);
     if (!urlMatch) {
@@ -30,7 +37,6 @@ export const parseAndStoreJobs: Action = {
       const pageTitle = await page.title();
       await page.close();
 
-      // Use LLM to extract structured job data
       const prompt = `You are a job listing extractor. Given the text content from a careers page, extract all job listings.
 
 Return ONLY a JSON array of objects with these fields:
@@ -40,6 +46,7 @@ Return ONLY a JSON array of objects with these fields:
 
 If no jobs are found, return an empty array [].
 Do NOT include any text before or after the JSON array.
+Do NOT wrap in markdown code fences.
 
 Page URL: ${careersUrl}
 Page Title: ${pageTitle}
@@ -52,14 +59,20 @@ ${rawText.slice(0, 6000)}`;
         temperature: 0.1,
       });
 
+      // Strip <think>...</think> from Qwen3 / reasoning models
+      const cleaned = (response as string)
+        .replace(/<think>[\s\S]*?<\/think>/gi, "")
+        .replace(/```json|```/g, "")
+        .trim();
+
       let jobs: { title: string; description?: string; link?: string }[] = [];
       try {
-        const jsonMatch = (response as string).match(/\[[\s\S]*\]/);
+        const jsonMatch = cleaned.match(/\[[\s\S]*\]/);
         if (jsonMatch) {
           jobs = JSON.parse(jsonMatch[0]);
         }
       } catch {
-        console.error("Failed to parse LLM response as JSON");
+        cb("⚠️  Failed to parse LLM response as JSON");
       }
 
       if (jobs.length === 0) {
@@ -70,14 +83,12 @@ ${rawText.slice(0, 6000)}`;
         };
       }
 
-      // Extract company info from URL/content
       const companyDomain = new URL(careersUrl).hostname.replace("www.", "");
       const companyName =
         (message as any).data?.companyName ||
         pageTitle.split(/[-–|]/)[0].trim() ||
         companyDomain;
 
-      // Prepare rows for Supabase
       const jobRows: JobRow[] = jobs.map((j) => ({
         title: j.title,
         description: j.description || "",
@@ -96,13 +107,14 @@ ${rawText.slice(0, 6000)}`;
         data: { count: jobs.length, stored, company: companyName },
       };
     } catch (err: any) {
-      await page?.close().catch(() => {});
+      await page?.close().catch(() => { });
       return {
         success: false,
         text: `Failed to parse jobs: ${err.message}`,
       };
     }
   },
+
   examples: [
     [
       {
