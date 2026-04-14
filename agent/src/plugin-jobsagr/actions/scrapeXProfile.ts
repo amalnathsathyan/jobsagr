@@ -14,6 +14,7 @@
  */
 
 import { type Action, type IAgentRuntime, ModelType } from "@elizaos/core";
+import { randomUUID } from "crypto";
 import { type Page } from "playwright";
 import { createPage } from "../services/browser.js";
 import { upsertJobs, type JobRow } from "../services/supabase.js";
@@ -95,7 +96,7 @@ async function extractXProfileJobs(page: Page, cb: (msg: string) => void): Promi
     );
 
     if (jobBoardLinks.length > 0) {
-      cb(`🎯 Found ${jobBoardLinks.length} job board links on X profile directly`);
+      console.log(`🎯 Found ${jobBoardLinks.length} job board links on X profile directly`);
       for (const { href, text, ariaLabel } of jobBoardLinks) {
         const title = text || ariaLabel || href.split("/").filter(Boolean).pop() || "Job Opening";
         if (title.length > 3 && title.length < 150) {
@@ -117,13 +118,13 @@ async function extractXProfileJobs(page: Page, cb: (msg: string) => void): Promi
     ).catch(() => [] as { title: string; href: string }[]);
 
     if (jobCards.length > 0) {
-      cb(`🎯 Found ${jobCards.length} job cards on X profile`);
+      console.log(`🎯 Found ${jobCards.length} job cards on X profile`);
       for (const { title, href } of jobCards) {
         if (title.length > 3) jobs.push({ title, link: href, description: "" });
       }
     }
   } catch (err: any) {
-    cb(`⚠️  X profile job extraction skipped: ${err.message}`);
+    console.log(`⚠️  X profile job extraction skipped: ${err.message}`);
   }
 
   return jobs;
@@ -139,7 +140,7 @@ async function findCareersUrlWithLLM(
   officialWebsite: string,
   cb: (msg: string) => void
 ): Promise<string | null> {
-  cb("🤖 Using LLM to find careers page from site links...");
+  console.log("🤖 Using LLM to find careers page from site links...");
 
   const allLinks = await page.$$eval("a[href]", (els: any[]) =>
     els
@@ -176,7 +177,7 @@ ${linkList}`;
 
   if (!cleaned || cleaned === "null" || !cleaned.startsWith("http")) return null;
 
-  cb(`🤖 LLM identified careers URL: ${cleaned}`);
+  console.log(`🤖 LLM identified careers URL: ${cleaned}`);
   return cleaned;
 }
 
@@ -216,7 +217,7 @@ async function findCareersLink(
     try {
       const resp = await page.goto(base + p, { timeout: 8000, waitUntil: "domcontentloaded" });
       if (resp && resp.status() >= 200 && resp.status() < 400) {
-        cb(`✅ Found via path probe: ${base + p}`);
+        console.log(`✅ Found via path probe: ${base + p}`);
         return base + p;
       }
     } catch { /* skip */ }
@@ -235,7 +236,7 @@ async function findCareersLink(
 // ─── Aggregator resolver ──────────────────────────────────────────────────────
 
 async function resolveAggregator(page: Page, aggregatorUrl: string, cb: (msg: string) => void): Promise<string> {
-  cb(`🌳 Aggregator detected — ${aggregatorUrl}`);
+  console.log(`🌳 Aggregator detected — ${aggregatorUrl}`);
   await page.goto(aggregatorUrl, { timeout: 15000, waitUntil: "domcontentloaded" });
   await settle(page);
 
@@ -254,7 +255,7 @@ async function resolveAggregator(page: Page, aggregatorUrl: string, cb: (msg: st
   const official = links.find(({ href }) => !isAggregator(href));
   if (official) { cb(`✅ Official site from aggregator: ${official.href}`); return official.href; }
 
-  cb(`⚠️  Could not resolve aggregator, using as-is`);
+  console.log(`⚠️  Could not resolve aggregator, using as-is`);
   return aggregatorUrl;
 }
 
@@ -264,7 +265,7 @@ async function extractPageContent(page: Page, url: string, cb: (msg: string) => 
   try {
     await page.goto(url, { timeout: 25000, waitUntil: "networkidle" });
   } catch {
-    cb("⚠️  networkidle timed out, proceeding with what loaded...");
+    console.log("⚠️  networkidle timed out, proceeding with what loaded...");
   }
   await settle(page, 3000);
 
@@ -279,7 +280,7 @@ async function extractPageContent(page: Page, url: string, cb: (msg: string) => 
       .filter(({ href, text }) => href.startsWith("http") && text.length > 2 && text.length < 200)
   ).catch(() => [] as { href: string; text: string }[]);
 
-  cb(`📄 Page: ${bodyText.length} chars, ${allLinks.length} links`);
+  console.log(`📄 Page: ${bodyText.length} chars, ${allLinks.length} links`);
   return { bodyText, allLinks, title };
 }
 
@@ -318,21 +319,25 @@ ${bodyText.slice(0, 3000)}
 === ALL LINKS ON PAGE (text | url) ===
 ${linkDump}`;
 
-  cb("🤖 Asking LLM to extract jobs...");
+  console.log("🤖 Asking LLM to extract jobs...");
   const raw = (await runtime.useModel(ModelType.TEXT_LARGE, { prompt })) as string;
-  cb(`📝 LLM preview: ${raw.slice(0, 150)}`);
+  console.log(`📝 LLM preview: ${raw.slice(0, 150)}`);
 
-  // Strip <think>...</think> from reasoning models (DeepSeek R1 etc.)
-  const stripped = raw
-    .replace(/<think>[\s\S]*?<\/think>/gi, "")
-    .replace(/```json|```/g, "")
-    .trim();
+  // Strip <think>...</think> from reasoning models (greedy for nested/multiline)
+  let stripped = raw.replace(/<think>[\s\S]*<\/think>/gi, "").trim();
+
+  // If stripping removed everything, use raw
+  if (stripped.length < 5) stripped = raw;
+
+  stripped = stripped.replace(/```json|```/g, "").trim();
 
   let jobs: { title: string; description?: string; link?: string }[] = [];
-  const match = stripped.match(/\[[\s\S]*\]/);
-  if (match) {
+
+  // Try to find JSON array — use greedy match for nested objects
+  const arrayMatch = stripped.match(/\[[\s\S]*\]/);
+  if (arrayMatch) {
     try {
-      jobs = JSON.parse(match[0]);
+      jobs = JSON.parse(arrayMatch[0]);
       // Sanity-filter: title must look like a job, not a URL or nav item
       jobs = jobs.filter(
         (j) =>
@@ -345,11 +350,11 @@ ${linkDump}`;
           )
       );
     } catch (e) {
-      cb(`⚠️  JSON parse error: ${(e as Error).message}`);
+      console.log(`⚠️  JSON parse error: ${(e as Error).message}`);
     }
   }
 
-  cb(`📊 LLM extracted: ${jobs.length} jobs`);
+  console.log(`📊 LLM extracted: ${jobs.length} jobs`);
 
   // Fallback: external job board links only (not same-domain)
   if (jobs.length === 0) {
@@ -362,7 +367,7 @@ ${linkDump}`;
     });
 
     if (jobBoardLinks.length > 0) {
-      cb(`🔁 Fallback: ${jobBoardLinks.length} external job board links`);
+      console.log(`🔁 Fallback: ${jobBoardLinks.length} external job board links`);
       jobs = jobBoardLinks.map(({ href, text }) => ({
         title: text || href.split("/").filter(Boolean).pop() || "Job Opening",
         description: "",
@@ -388,7 +393,7 @@ export const scrapeXProfile: Action = {
   },
 
   handler: async (runtime, message, _state, _options, callback) => {
-    const cb = (msg: string) => callback?.({ text: msg });
+    const cb = (msg: string) => callback?.({ text: msg, responseId: randomUUID() });
     const text = message.content?.text || "";
 
     const urlMatch = text.match(/https?:\/\/(x\.com|twitter\.com)\/([A-Za-z0-9_]+)/);
@@ -411,7 +416,7 @@ export const scrapeXProfile: Action = {
       const loginWall = await page.$('input[autocomplete="username"]').then(Boolean).catch(() => false);
       if (loginWall) {
         await page.close();
-        cb("⚠️ Login wall. Re-run: bun scripts/xLogin.ts");
+        console.log("⚠️ Login wall. Re-run: bun scripts/xLogin.ts");
         return { success: false, text: "Login wall detected." };
       }
 
@@ -423,13 +428,13 @@ export const scrapeXProfile: Action = {
         .$eval('[data-testid="UserDescription"]', (el: any) => el.innerText.trim())
         .catch(() => "");
 
-      cb(`✅ Profile: ${displayName} (@${handle})\n📝 ${bio || "(no bio)"}`);
+      console.log(`✅ Profile: ${displayName} (@${handle})\n📝 ${bio || "(no bio)"}`);
 
       // ── 1b. Extract jobs shown directly on X profile (Arbitrum-style) ──
-      cb(`🔍 Checking for jobs shown directly on X profile...`);
+      console.log(`🔍 Checking for jobs shown directly on X profile...`);
       const xProfileJobs = await extractXProfileJobs(page, cb);
       if (xProfileJobs.length > 0) {
-        cb(`🎯 Found ${xProfileJobs.length} jobs on X profile page itself — storing...`);
+        console.log(`🎯 Found ${xProfileJobs.length} jobs on X profile page itself — storing...`);
         const rows: JobRow[] = xProfileJobs.map((j) => ({
           ...j,
           company_name: displayName,
@@ -438,7 +443,7 @@ export const scrapeXProfile: Action = {
           source_url: profileUrl,
         }));
         const stored = await upsertJobs(rows);
-        cb(`✅ Stored ${stored} X-profile jobs. Continuing to find more from website...`);
+        console.log(`✅ Stored ${stored} X-profile jobs. Continuing to find more from website...`);
       }
 
       // ── 2. Get website link from X profile ────────────────────────────
@@ -460,21 +465,21 @@ export const scrapeXProfile: Action = {
       if (!websiteUrl) {
         await page.close();
         if (xProfileJobs.length > 0) {
-          cb(`⚠️  No website link on @${handle}, but stored ${xProfileJobs.length} X-profile jobs.`);
+          console.log(`⚠️  No website link on @${handle}, but stored ${xProfileJobs.length} X-profile jobs.`);
           return { success: true, text: `Found ${xProfileJobs.length} jobs directly on @${handle}'s X profile.` };
         }
-        cb(`❌ No website link found on @${handle}'s profile.`);
+        console.log(`❌ No website link found on @${handle}'s profile.`);
         return { success: false, text: `No website link on @${handle}.` };
       }
 
-      cb(`🔗 Website: ${websiteUrl}`);
+      console.log(`🔗 Website: ${websiteUrl}`);
 
       // ── 3. Navigate to website ─────────────────────────────────────────
-      cb(`🌐 Step 2 — Navigating to: ${websiteUrl}`);
+      console.log(`🌐 Step 2 — Navigating to: ${websiteUrl}`);
       await page.goto(websiteUrl, { timeout: 20000, waitUntil: "domcontentloaded" });
       await settle(page);
       let currentUrl = page.url();
-      cb(`   Landed: ${currentUrl}`);
+      console.log(`   Landed: ${currentUrl}`);
 
       // ── 4. Resolve aggregator ──────────────────────────────────────────
       if (isAggregator(currentUrl)) {
@@ -482,18 +487,18 @@ export const scrapeXProfile: Action = {
         await page.goto(officialSite, { timeout: 20000, waitUntil: "domcontentloaded" });
         await settle(page);
         currentUrl = page.url();
-        cb(`   Now on: ${currentUrl}`);
+        console.log(`   Now on: ${currentUrl}`);
       }
 
       const officialWebsite = currentUrl;
 
       // ── 5. Find careers page ───────────────────────────────────────────
-      cb(`🔍 Step 4 — Looking for careers page on ${new URL(officialWebsite).hostname}`);
+      console.log(`🔍 Step 4 — Looking for careers page on ${new URL(officialWebsite).hostname}`);
 
       let careersUrl: string | null = null;
       if (isCareersUrl(officialWebsite)) {
         careersUrl = officialWebsite;
-        cb(`   Already on careers page!`);
+        console.log(`   Already on careers page!`);
       } else {
         careersUrl = await findCareersLink(runtime, page, officialWebsite, cb);
       }
@@ -503,25 +508,26 @@ export const scrapeXProfile: Action = {
         const summary = xProfileJobs.length > 0
           ? `No careers page found, but stored ${xProfileJobs.length} jobs from X profile.`
           : `No careers page found for ${displayName} at ${officialWebsite}.`;
-        cb(`❌ ${summary}`);
+        console.log(`❌ ${summary}`);
         return { success: xProfileJobs.length > 0, text: summary };
       }
 
-      cb(`✅ Careers page: ${careersUrl}`);
+      console.log(`✅ Careers page: ${careersUrl}`);
 
       // ── 6. Crawl careers page for individual job URLs ──────────────────
-      cb(`📋 Step 5 — Crawling careers page for individual job URLs...`);
+      console.log(`📋 Step 5 — Crawling careers page for individual job URLs...`);
       await page.close(); // done with the navigation page
 
       const jobUrls = await crawlCareerListings(careersUrl!, cb);
       let careersPageJobs: JobRow[] = [];
+      let totalStored = 0;
 
       if (jobUrls.length > 0) {
         // ── 7. Extract structured details from each job URL ──────────────
         const BATCH_SIZE = 3;
         const MAX_DETAIL_PAGES = 20;
         const urlsToProcess = jobUrls.slice(0, MAX_DETAIL_PAGES);
-        cb(`🔬 Step 6 — Extracting details from ${urlsToProcess.length} job pages (batches of ${BATCH_SIZE})...`);
+        console.log(`🔬 Step 6 — Extracting details from ${urlsToProcess.length} job pages (batches of ${BATCH_SIZE})...`);
 
         for (let i = 0; i < urlsToProcess.length; i += BATCH_SIZE) {
           const batch = urlsToProcess.slice(i, i + BATCH_SIZE);
@@ -529,10 +535,11 @@ export const scrapeXProfile: Action = {
             batch.map((url) => extractJobDetail(runtime, url))
           );
 
+          const batchJobs: JobRow[] = [];
           for (const result of results) {
             if (result.status === "fulfilled" && result.value) {
               const d = result.value;
-              careersPageJobs.push({
+              const row: JobRow = {
                 title: d.title,
                 description: d.description,
                 summary: d.summary,
@@ -544,21 +551,38 @@ export const scrapeXProfile: Action = {
                 company_x_handle: handle,
                 company_website: officialWebsite,
                 source_url: careersUrl!,
-              });
+              };
+              batchJobs.push(row);
+              careersPageJobs.push(row);
             }
           }
-          cb(`  ✅ Batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(urlsToProcess.length / BATCH_SIZE)}: ${careersPageJobs.length} jobs extracted so far`);
+
+          // Upsert this batch immediately — skip on failure, continue to next batch
+          const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+          const totalBatches = Math.ceil(urlsToProcess.length / BATCH_SIZE);
+
+          if (batchJobs.length > 0) {
+            try {
+              const stored = await upsertJobs(batchJobs);
+              totalStored += stored;
+              console.log(`  ✅ Batch ${batchNum}/${totalBatches}: ${batchJobs.length} extracted, ${stored} stored (total: ${totalStored})`);
+            } catch (dbErr: any) {
+              console.log(`  ❌ Batch ${batchNum}/${totalBatches}: DB upsert failed (${dbErr.message}) — skipping, continuing...`);
+            }
+          } else {
+            console.log(`  ⚠️  Batch ${batchNum}/${totalBatches}: 0 jobs extracted`);
+          }
         }
       }
 
       // Fallback: if crawler found no individual job URLs, try single-page LLM extraction
       if (careersPageJobs.length === 0) {
-        cb(`⚠️  No jobs from crawler — falling back to page-level LLM extraction...`);
+        console.log(`⚠️  No jobs from crawler — falling back to page-level LLM extraction...`);
         const fallbackPage = await createPage();
         const fallbackJobs = await extractJobsFromPage(runtime, fallbackPage, careersUrl!, cb);
         await fallbackPage.close();
 
-        careersPageJobs = fallbackJobs.map((j) => ({
+        const fallbackRows = fallbackJobs.map((j) => ({
           title: j.title,
           description: j.description || "",
           link: j.link || careersUrl!,
@@ -567,6 +591,11 @@ export const scrapeXProfile: Action = {
           company_website: officialWebsite,
           source_url: careersUrl!,
         }));
+
+        if (fallbackRows.length > 0) {
+          totalStored = await upsertJobs(fallbackRows);
+          careersPageJobs = fallbackRows;
+        }
       }
 
       const totalFound = xProfileJobs.length + careersPageJobs.length;
@@ -575,23 +604,20 @@ export const scrapeXProfile: Action = {
         const summary = xProfileJobs.length > 0
           ? `No additional jobs on careers page, but already stored ${xProfileJobs.length} from X profile.`
           : `Found careers page (${careersUrl}) but no jobs extracted.`;
-        cb(`⚠️  ${summary}`);
+        console.log(`⚠️  ${summary}`);
         return { success: true, text: summary };
       }
 
-      cb(`💾 Upserting ${careersPageJobs.length} jobs to DB...`);
-      const stored = await upsertJobs(careersPageJobs);
-
-      cb(`🎉 ${displayName} — ${totalFound} total jobs found, ${stored} new from careers page stored.`);
+      cb(`🎉 ${displayName} — ${totalFound} total jobs found, ${totalStored} new from careers page stored.`);
       return {
         success: true,
-        text: `✅ ${displayName} (@${handle}): found ${totalFound} jobs total, ${stored} stored from careers page. Careers: ${careersUrl}`,
-        data: { companyName: displayName, xHandle: handle, website: officialWebsite, careersUrl, jobsFound: totalFound, jobsStored: stored },
+        text: `✅ ${displayName} (@${handle}): found ${totalFound} jobs total, ${totalStored} stored from careers page. Careers: ${careersUrl}`,
+        data: { companyName: displayName, xHandle: handle, website: officialWebsite, careersUrl, jobsFound: totalFound, jobsStored: totalStored },
       };
 
     } catch (err: any) {
       await page.close().catch(() => { });
-      cb(`❌ Pipeline failed: ${err.message}`);
+      console.log(`❌ Pipeline failed: ${err.message}`);
       return { success: false, text: `Error: ${err.message}` };
     }
   },

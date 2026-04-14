@@ -41,6 +41,22 @@ const LISTING_NEGATIVE_KWS = [
     "investor", "docs", "help", "support", "privacy", "terms",
     "twitter", "x.com", "linkedin", "github", "discord", "youtube",
     "instagram", "facebook", "tiktok", "medium",
+    "cookie", "legal", "security", "vulnerability", "powered",
+    "imprint", "disclaimer", "contact", "accessibility",
+    "sitemap", "subscribe", "newsletter", "login", "sign-in", "signup",
+];
+
+/** Link text that is NEVER a job title — boilerplate / footer / nav */
+const JUNK_LINK_TEXT = [
+    "privacy policy", "privacy", "terms of service", "terms of use", "terms",
+    "cookie policy", "cookies", "security", "vulnerability disclosure",
+    "powered by", "powered by ashby", "imprint", "legal",
+    "contact us", "contact", "accessibility", "sitemap",
+    "log in", "sign in", "sign up", "register",
+    "home", "back to top", "go back", "return",
+    "twitter", "linkedin", "github", "discord", "facebook",
+    "blog", "press", "news", "about us", "about",
+    "subscribe", "newsletter",
 ];
 
 const GATEWAY_CTA_TEXT = [
@@ -102,6 +118,20 @@ function linkScore(href: string, text: string): number {
 /** Looks like an individual job detail page (not a listing index). */
 function looksLikeJobDetail(url: string): boolean {
     const u = url.toLowerCase();
+
+    // Explicitly reject known non-job URL patterns
+    const nonJobPatterns = [
+        "/privacy", "/terms", "/security", "/vulnerability",
+        "/cookie", "/legal", "/imprint", "/contact",
+        "/login", "/signin", "/signup", "/register",
+        "/application",  // Ashby application form, not a listing
+        "/powered",
+        "/about", "/blog", "/press", "/news",
+    ];
+    for (const pattern of nonJobPatterns) {
+        if (u.includes(pattern)) return false;
+    }
+
     // ATS patterns for detail pages
     if (/\/jobs\/[a-z0-9\-]+\/?\??/i.test(u)) return true;       // Lever, custom
     if (/\/o\/[a-z0-9\-]+/i.test(u)) return true;                // Greenhouse
@@ -110,8 +140,30 @@ function looksLikeJobDetail(url: string): boolean {
     if (/\/job\/[a-z0-9\-]+/i.test(u)) return true;
     if (/\/position\/[a-z0-9\-]+/i.test(u)) return true;
     if (/\/opening\/[a-z0-9\-]+/i.test(u)) return true;
-    // Has a numeric or UUID segment after /jobs/ or /careers/
-    if (/\/(jobs|careers|positions|openings)\/[a-z0-9\-]{5,}/i.test(u)) return true;
+    // Has a UUID or slug segment after /jobs/ or /careers/ (Ashby format)
+    if (/\/(jobs|careers|positions|openings)\/[a-f0-9\-]{8,}/i.test(u)) return true;
+    return false;
+}
+
+/** Is this a footer/boilerplate/non-job link that should be discarded entirely? */
+function isJunkLink(href: string, text: string): boolean {
+    const t = text.toLowerCase().trim();
+    const u = href.toLowerCase();
+
+    // Exact match or starts-with on known junk text
+    if (JUNK_LINK_TEXT.some((junk) => t === junk || t.startsWith(junk + " "))) return true;
+
+    // Very short link text that's not a job title (1-2 words, generic)
+    if (t.length > 0 && t.length < 4 && !/\d/.test(t)) return true;
+
+    // URL contains obvious non-job paths
+    const junkPaths = [
+        "/privacy", "/terms", "/security", "/vulnerability",
+        "/cookie", "/legal", "/imprint", "/contact",
+        "/login", "/signin", "/signup",
+    ];
+    if (junkPaths.some((p) => u.includes(p))) return true;
+
     return false;
 }
 
@@ -201,6 +253,8 @@ async function extractLinks(
         if (!norm) continue;
         if (visited.has(norm)) continue;
         if (!isAllowedDomain(norm, companyDomain)) continue;
+        // Filter out footer/boilerplate links
+        if (isJunkLink(norm, text)) continue;
         const score = linkScore(norm, text);
         if (score < -2) continue; // clearly negative
         results.push({ href: norm, text, score });
@@ -243,13 +297,13 @@ export async function crawlCareerListings(
                 continue;
             }
 
-            cb(`🔍 [depth=${depth}] Visiting: ${url}`);
+            console.log(`🔍 [depth=${depth}] Visiting: ${url}`);
 
             try {
                 await page.goto(url, { timeout: 18000, waitUntil: "domcontentloaded" });
                 await page.waitForTimeout(SETTLE_MS);
             } catch (e: any) {
-                cb(`  ⚠️  Failed to load: ${e.message}`);
+                console.log(`  ⚠️  Failed to load: ${e.message}`);
                 continue;
             }
 
@@ -258,10 +312,10 @@ export async function crawlCareerListings(
                 const links0 = await extractLinks(page, companyDomain, visited);
                 const detailLinksCount = links0.filter((l) => looksLikeJobDetail(l.href)).length;
                 if (detailLinksCount === 0) {
-                    cb(`  🚪 No job links visible — trying gateway CTA...`);
+                    console.log(`  🚪 No job links visible — trying gateway CTA...`);
                     const newUrl = await clickGatewayCTA(page, url);
                     if (newUrl && newUrl !== url) {
-                        cb(`  ✅ Gateway CTA navigated to: ${newUrl}`);
+                        console.log(`  ✅ Gateway CTA navigated to: ${newUrl}`);
                         const norm = normalizeUrl(newUrl, newUrl) || newUrl;
                         if (!visited.has(norm)) queue.unshift({ url: newUrl, depth: 1 });
                         continue;
@@ -278,17 +332,17 @@ export async function crawlCareerListings(
                     if (!scrolled) break;
                 }
                 attempts++;
-                cb(`  📜 Load-more interaction #${attempts}`);
+                console.log(`  📜 Load-more interaction #${attempts}`);
             }
 
             // Extract all links from current page
             const links = await extractLinks(page, companyDomain, visited);
-            cb(`  🔗 Found ${links.length} candidate links`);
+            console.log(`  🔗 Found ${links.length} candidate links`);
 
             for (const { href, score } of links) {
                 if (looksLikeJobDetail(href)) {
                     jobDetailUrls.add(href);
-                    cb(`  💼 Job detail: ${href}`);
+                    console.log(`  💼 Job detail: ${href}`);
                 } else if (depth < MAX_DEPTH && (looksLikeListingPage(href) || score > 0)) {
                     queue.push({ url: href, depth: depth + 1 });
                 }
@@ -301,7 +355,7 @@ export async function crawlCareerListings(
             for (const { href } of paginationLinks) {
                 const norm = normalizeUrl(href, href) || href;
                 if (!visited.has(norm)) {
-                    cb(`  ➡️  Pagination link: ${href}`);
+                    console.log(`  ➡️  Pagination link: ${href}`);
                     queue.unshift({ url: href, depth: depth }); // same depth
                 }
             }
