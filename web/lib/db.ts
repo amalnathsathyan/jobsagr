@@ -18,6 +18,11 @@ export interface Job {
   created_at: string;
 }
 
+/**
+ * Fetches all jobs from the Supabase jobs table, sorted by scraped_at descending.
+ * 
+ * @returns {Promise<Job[]>} An array of Job objects, or an empty array if an error occurs.
+ */
 export async function getJobs(): Promise<Job[]> {
   const { data, error } = await supabase
     .from("jobs")
@@ -32,6 +37,11 @@ export async function getJobs(): Promise<Job[]> {
   return data ?? [];
 }
 
+/**
+ * Fetches a list of unique company names from the jobs table.
+ * 
+ * @returns {Promise<string[]>} An array of distinct company name strings.
+ */
 export async function getCompanies(): Promise<string[]> {
   const { data, error } = await supabase
     .from("jobs")

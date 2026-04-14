@@ -56,15 +56,44 @@ const JOB_BOARD_DOMAINS = [
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+/**
+ * Checks if a URL matches known link aggregator patterns (e.g., linktr.ee).
+ * @param {string} url - The URL to check.
+ * @returns {boolean} True if the URL is an aggregator, false otherwise.
+ */
 const isAggregator = (url: string) => LINK_AGGREGATOR_PATTERNS.some((p) => url.includes(p));
+
+/**
+ * Checks if a URL belongs to a domain that should be skipped during scraping.
+ * @param {string} url - The URL to check.
+ * @returns {boolean} True if the domain is skippable, false otherwise.
+ */
 const isSkippable = (url: string) => SKIP_DOMAINS.some((d) => url.includes(d));
+
+/**
+ * Checks if a URL matches known careers-related keywords or paths.
+ * @param {string} url - The URL to check.
+ * @returns {boolean} True if the URL appears to be a careers page, false otherwise.
+ */
 const isCareersUrl = (url: string) => CAREERS_KEYWORDS.some((k) => url.toLowerCase().includes(k));
+
+/**
+ * Utility function to wait for a specified duration to allow page rendering/loading.
+ * @param {Page} page - The Playwright Page instance.
+ * @param {number} [ms=2500] - Duration to wait in milliseconds.
+ * @returns {Promise<void>} Resolves when the wait is complete.
+ */
 const settle = (page: Page, ms = 2500) => page.waitForTimeout(ms);
 
-// ─── Step 0: Extract jobs shown directly on the X profile page ───────────────
-// Some companies (e.g. Arbitrum) show a "We're Hiring" widget with job cards
-// directly on their X profile. Grab those before navigating away.
-
+/**
+ * Step 0: Extract jobs shown directly on the X profile page.
+ * Some companies (e.g. Arbitrum) show a "We're Hiring" widget with job cards
+ * directly on their X profile. Grab those before navigating away.
+ * 
+ * @param {Page} page - The Playwright Page instance currently on the X profile.
+ * @param {function} cb - Callback to send status messages.
+ * @returns {Promise<JobRow[]>} Array of extracted jobs directly from the X profile.
+ */
 async function extractXProfileJobs(page: Page, cb: (msg: string) => void): Promise<JobRow[]> {
   const jobs: JobRow[] = [];
 
@@ -130,10 +159,16 @@ async function extractXProfileJobs(page: Page, cb: (msg: string) => void): Promi
   return jobs;
 }
 
-// ─── LLM-assisted careers URL finder ─────────────────────────────────────────
-// When link scoring fails, ask the LLM to identify the careers page from a
-// list of all links on the company's homepage.
-
+/**
+ * Use LLM as a fallback to identify the careers page from a list of website links.
+ * Extracts all links on the page and prompts the LLM to identify the most likely careers link.
+ * 
+ * @param {IAgentRuntime} runtime - The agent runtime instance for accessing the LLM.
+ * @param {Page} page - The Playwright Page instance.
+ * @param {string} officialWebsite - The company's official homepage URL.
+ * @param {function} cb - Callback to send status messages.
+ * @returns {Promise<string | null>} The identified careers URL or null if none found.
+ */
 async function findCareersUrlWithLLM(
   runtime: IAgentRuntime,
   page: Page,
@@ -183,6 +218,13 @@ ${linkList}`;
 
 // ─── Careers page link finder (score + guess + LLM) ──────────────────────────
 
+/**
+ * Calculates a relevance score for a link based on its URL and inner text matching careers keywords.
+ * 
+ * @param {string} href - The link's URL.
+ * @param {string} text - The link's visible text.
+ * @returns {number} An integer score representing how likely this is a careers link.
+ */
 function careersScore(href: string, text: string): number {
   let score = 0;
   for (const kw of CAREERS_KEYWORDS) {
@@ -192,6 +234,15 @@ function careersScore(href: string, text: string): number {
   return score;
 }
 
+/**
+ * Searches the company website for a careers page using link scoring, path guessing, and an LLM fallback.
+ * 
+ * @param {IAgentRuntime} runtime - The agent runtime containing the LLM model.
+ * @param {Page} page - Playwright Page object currently on the company homepage.
+ * @param {string} officialWebsite - The base URL of the company.
+ * @param {function} cb - Callback function for logging.
+ * @returns {Promise<string | null>} The URL of the careers page, or null if undiscovered.
+ */
 async function findCareersLink(
   runtime: IAgentRuntime,
   page: Page,
@@ -235,6 +286,15 @@ async function findCareersLink(
 
 // ─── Aggregator resolver ──────────────────────────────────────────────────────
 
+/**
+ * Resolves link tree aggregators (e.g. Linktree) to find the company's official website URL.
+ * Scans the aggregator links and returns the first link that is not another aggregator or skippable domain.
+ * 
+ * @param {Page} page - The Playwright Page object.
+ * @param {string} aggregatorUrl - The URL of the aggregator page.
+ * @param {function} cb - Status callback for logging.
+ * @returns {Promise<string>} The resolved official site URL, or the original aggregator URL if resolution fails.
+ */
 async function resolveAggregator(page: Page, aggregatorUrl: string, cb: (msg: string) => void): Promise<string> {
   console.log(`🌳 Aggregator detected — ${aggregatorUrl}`);
   await page.goto(aggregatorUrl, { timeout: 15000, waitUntil: "domcontentloaded" });
@@ -261,6 +321,14 @@ async function resolveAggregator(page: Page, aggregatorUrl: string, cb: (msg: st
 
 // ─── SPA-aware page content extraction ───────────────────────────────────────
 
+/**
+ * Extracts all text and links from a Single Page Application (SPA), accounting for dynamic loading.
+ * 
+ * @param {Page} page - The Playwright Page instance.
+ * @param {string} url - Target URL to extract from.
+ * @param {function} cb - Callback for state tracking.
+ * @returns {Promise<{bodyText: string, allLinks: {href: string, text: string}[], title: string}>} Extracted page details.
+ */
 async function extractPageContent(page: Page, url: string, cb: (msg: string) => void) {
   try {
     await page.goto(url, { timeout: 25000, waitUntil: "networkidle" });
@@ -286,6 +354,16 @@ async function extractPageContent(page: Page, url: string, cb: (msg: string) => 
 
 // ─── Job extraction from careers page ────────────────────────────────────────
 
+/**
+ * LLM-based full-page extraction fallback if the crawler couldn't find individual job detail links.
+ * Passes the entire careers page text and link list to the LLM to identify job entries.
+ * 
+ * @param {IAgentRuntime} runtime - System runtime containing LLM APIs.
+ * @param {Page} page - The Playwright Page object open to the careers page.
+ * @param {string} careersUrl - URL of the careers page.
+ * @param {function} cb - Status callback.
+ * @returns {Promise<{title: string, description?: string, link?: string}[]>} An array of raw extracted jobs.
+ */
 async function extractJobsFromPage(
   runtime: IAgentRuntime,
   page: Page,

@@ -3,6 +3,13 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 let _client: SupabaseClient | null = null;
 
+/**
+ * Retrieves a singleton instance of the Supabase Client.
+ * Initializes the client if it hasn't been instantiated yet.
+ * 
+ * @throws {Error} If SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY are missing in the environment.
+ * @returns {SupabaseClient} The active Supabase client instance.
+ */
 export function getSupabase(): SupabaseClient {
   if (_client) return _client;
 
@@ -31,6 +38,14 @@ export interface JobRow {
   canonical_url?: string;
 }
 
+/**
+ * Upserts a batch of job rows into the Supabase database.
+ * Attempts a bulk upsert first, falling back to a row-by-row insert strategy
+ * to handle potential schema mismatches or partial failures gracefully.
+ * 
+ * @param {JobRow[]} jobs - An array of JobRow objects to insert into the database.
+ * @returns {Promise<number>} The total number of jobs successfully inserted/upserted.
+ */
 export async function upsertJobs(jobs: JobRow[]): Promise<number> {
   if (jobs.length === 0) return 0;
 

@@ -74,6 +74,12 @@ const PAGINATION_TEXT = [
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+/**
+ * Normalizes a URL by resolving it against a base URL, removing tracking parameters, fragments, and trailing slashes.
+ * @param {string} raw - The raw URL string to normalize.
+ * @param {string} base - The base URL to resolve relative paths against.
+ * @returns {string | null} The normalized URL, or null if it's invalid or not HTTP(S).
+ */
 function normalizeUrl(raw: string, base: string): string | null {
     try {
         const u = new URL(raw, base);
@@ -92,6 +98,12 @@ function normalizeUrl(raw: string, base: string): string | null {
     }
 }
 
+/**
+ * Checks if a given URL belongs to either the company's domain or a known ATS domain.
+ * @param {string} url - The URL to check.
+ * @param {string} companyDomain - The base domain of the company.
+ * @returns {boolean} True if the URL is allowed, false otherwise.
+ */
 function isAllowedDomain(url: string, companyDomain: string): boolean {
     try {
         const host = new URL(url).hostname.replace(/^www\./, "");
@@ -103,6 +115,12 @@ function isAllowedDomain(url: string, companyDomain: string): boolean {
     }
 }
 
+/**
+ * Calculates a relevance score for a link based on its URL and text matching positive/negative string keywords.
+ * @param {string} href - The link's URL.
+ * @param {string} text - The link's visible text.
+ * @returns {number} The calculated integer score.
+ */
 function linkScore(href: string, text: string): number {
     const h = href.toLowerCase();
     const t = text.toLowerCase();
@@ -118,7 +136,11 @@ function linkScore(href: string, text: string): number {
     return score;
 }
 
-/** Looks like an individual job detail page (not a listing index). */
+/**
+ * Checks if a URL matches the pattern of an individual job detail page (not a listing index).
+ * @param {string} url - The URL to evaluate.
+ * @returns {boolean} True if the URL is likely a job detail page, false otherwise.
+ */
 function looksLikeJobDetail(url: string): boolean {
     const u = url.toLowerCase();
 
@@ -152,7 +174,12 @@ function looksLikeJobDetail(url: string): boolean {
     return false;
 }
 
-/** Is this a footer/boilerplate/non-job link that should be discarded entirely? */
+/**
+ * Determines if a link is a footer, boilerplate, or otherwise non-job link to be discarded.
+ * @param {string} href - The URL of the link.
+ * @param {string} text - The visible text of the link.
+ * @returns {boolean} True if the link is considered junk, false otherwise.
+ */
 function isJunkLink(href: string, text: string): boolean {
     const t = text.toLowerCase().trim();
     const u = href.toLowerCase();
@@ -174,14 +201,22 @@ function isJunkLink(href: string, text: string): boolean {
     return false;
 }
 
-/** Looks like a careers listing or gateway page. */
+/**
+ * Checks if a URL looks like a careers listing or gateway page based on URL keywords.
+ * @param {string} url - The URL to check.
+ * @returns {boolean} True if it looks like a listing page, false otherwise.
+ */
 function looksLikeListingPage(url: string): boolean {
     return LISTING_POSITIVE_KWS.some((kw) => url.toLowerCase().includes(kw));
 }
 
 // ─── Page interactions ────────────────────────────────────────────────────────
 
-/** Scroll to bottom, detect new content. Returns true if new content loaded. */
+/**
+ * Scrolls to the bottom of the page to detect dynamically loaded new content.
+ * @param {Page} page - The Playwright Page instance.
+ * @returns {Promise<boolean>} True if new links were detected after scrolling, false otherwise.
+ */
 async function scrollAndDetectMore(page: Page): Promise<boolean> {
     const before = await page.$$eval("a[href]", (els: any[]) => els.length).catch(() => 0);
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
@@ -190,7 +225,11 @@ async function scrollAndDetectMore(page: Page): Promise<boolean> {
     return after > before;
 }
 
-/** Click "Load more" / "Show more" buttons. Returns true if clicked. */
+/**
+ * Attempts to click "Load more" or "Show more" pagination buttons.
+ * @param {Page} page - The Playwright Page instance.
+ * @returns {Promise<boolean>} True if a button was clicked successfully, false otherwise.
+ */
 async function clickLoadMore(page: Page): Promise<boolean> {
     const buttons = await page.$$("button, a, [role='button']").catch(() => []);
     for (const btn of buttons) {
@@ -206,7 +245,12 @@ async function clickLoadMore(page: Page): Promise<boolean> {
     return false;
 }
 
-/** Click a gateway CTA to reach the actual job listings. Returns new URL or null. */
+/**
+ * Clicks a gateway call-to-action (CTA) to reach actual job listings (e.g. "View open roles").
+ * @param {Page} page - The Playwright Page instance.
+ * @param {string} baseUrl - The base URL of the current page.
+ * @returns {Promise<string | null>} The new URL if navigated successfully, or null if no CTA was found/clicked.
+ */
 async function clickGatewayCTA(page: Page, baseUrl: string): Promise<string | null> {
     const links = await page.$$eval("a[href], button", (els: any[]) =>
         els.map((el) => ({
@@ -239,7 +283,14 @@ async function clickGatewayCTA(page: Page, baseUrl: string): Promise<string | nu
     }
 }
 
-/** Extract all href links from current page, scored and filtered. */
+/**
+ * Extracts, normalizes, and filters all href links from the current page.
+ * Filtered links are scored to evaluate their relevance.
+ * @param {Page} page - The Playwright Page instance.
+ * @param {string} companyDomain - The base domain string of the company.
+ * @param {Set<string>} visited - Set of previously visited normalized URLs.
+ * @returns {Promise<{href: string, text: string, score: number}[]>} Array of extracted and scored links.
+ */
 async function extractLinks(
     page: Page,
     companyDomain: string,
@@ -272,6 +323,13 @@ async function extractLinks(
 
 // ─── Main BFS crawler ─────────────────────────────────────────────────────────
 
+/**
+ * Executes a Breadth-First Search (BFS) crawl starting at the careers URL to discover individual job details.
+ * 
+ * @param {string} careersUrl - The starting careers page URL.
+ * @param {function} cb - Callback string for sending status updates.
+ * @returns {Promise<string[]>} Array of discovered canonical job detail URLs.
+ */
 export async function crawlCareerListings(
     careersUrl: string,
     cb: (msg: string) => void

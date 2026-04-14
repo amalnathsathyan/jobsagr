@@ -51,10 +51,20 @@ export interface JobDetail {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+/**
+ * Computes the SHA-256 hash of a given text.
+ * @param {string} text - The input text.
+ * @returns {string} The computed hexadecimal hash.
+ */
 function sha256(text: string): string {
     return crypto.createHash("sha256").update(text).digest("hex");
 }
 
+/**
+ * Canonicalizes a URL by removing common tracking parameters and trailing slashes, and converting to lowercase.
+ * @param {string} url - The URL to canonicalize.
+ * @returns {string} The canonicalized URL string.
+ */
 function canonicalize(url: string): string {
     try {
         const u = new URL(url);
@@ -67,7 +77,11 @@ function canonicalize(url: string): string {
     }
 }
 
-/** Detect degenerate LLM output (repetitive token loops) */
+/**
+ * Detects degenerate LLM output, such as repetitive token loops.
+ * @param {string} text - The LLM generated text.
+ * @returns {boolean} True if the text indicates a degenerate repetitive loop, false otherwise.
+ */
 function isDegenerate(text: string): boolean {
     const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
     const freq: Record<string, number> = {};
@@ -85,7 +99,11 @@ function isDegenerate(text: string): boolean {
 
 // Heuristic looksLikeJobPage removed to allow LLM to make the decision
 
-/** Extract a readable title from a URL slug as fallback */
+/**
+ * Extracts a readable title from a URL slug as a fallback mechanism.
+ * @param {string} url - The URL to extract the title from.
+ * @returns {string | null} The formatted title string, or null if unextractable.
+ */
 function titleFromUrl(url: string): string | null {
     try {
         const path = new URL(url).pathname;
@@ -98,7 +116,11 @@ function titleFromUrl(url: string): string | null {
     return null;
 }
 
-/** Find first balanced { ... } block in text */
+/**
+ * Finds the first balanced { ... } JSON block in a given text string.
+ * @param {string} text - The text to search within.
+ * @returns {string | null} The extracted JSON string, or null if no balanced block is found.
+ */
 function findBalancedJson(text: string): string | null {
     const start = text.indexOf("{");
     if (start === -1) return null;
@@ -113,6 +135,14 @@ function findBalancedJson(text: string): string | null {
 
 // ─── LLM extraction ───────────────────────────────────────────────────────────
 
+/**
+ * Uses an LLM to extract structured job details (title, summary, description, category) from page text.
+ * 
+ * @param {IAgentRuntime} runtime - The agent runtime containing the LLM model.
+ * @param {string} pageText - The scraped text from the job detail page.
+ * @param {string} url - The URL of the job posting (used as context).
+ * @returns {Promise<{ title: string; summary: string; description: string; category: JobCategory }>} The extracted details.
+ */
 async function llmExtract(
     runtime: IAgentRuntime,
     pageText: string,
@@ -184,6 +214,13 @@ ${inputText}`;
 
 // ─── Main extractor ───────────────────────────────────────────────────────────
 
+/**
+ * Primary action to process a job URL. Extracts and structures its details into a `JobDetail` object.
+ * 
+ * @param {IAgentRuntime} runtime - The agent runtime instance.
+ * @param {string} rawUrl - The job detail page URL to process.
+ * @returns {Promise<JobDetail | null>} Valid JobDetail object, or null if extraction fails or it's not a job.
+ */
 export async function extractJobDetail(
     runtime: IAgentRuntime,
     rawUrl: string

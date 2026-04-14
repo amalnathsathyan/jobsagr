@@ -12,6 +12,12 @@ const COOKIES_PATH = path.resolve(process.cwd(), "x_cookies.json");
 let _browser: Browser | null = null;
 let _context: BrowserContext | null = null;
 
+/**
+ * Initializes and returns a singleton instance of the Chromium browser.
+ * Launches headless with sandbox restrictions disabled to support deployment environments.
+ * 
+ * @returns {Promise<Browser>} A Playwright Browser instance.
+ */
 async function getBrowser(): Promise<Browser> {
   if (_browser?.isConnected()) return _browser;
   _browser = await chromium.launch({
@@ -21,6 +27,12 @@ async function getBrowser(): Promise<Browser> {
   return _browser;
 }
 
+/**
+ * Retrieves the singleton BrowserContext. If not initialized, it sets up a new context
+ * with standard user agent, viewport, HTTP headers, and loads any available authentication cookies.
+ * 
+ * @returns {Promise<BrowserContext>} An initialized Playwright BrowserContext.
+ */
 async function getContext(): Promise<BrowserContext> {
   if (_context) return _context;
 
@@ -52,12 +64,22 @@ async function getContext(): Promise<BrowserContext> {
   return _context;
 }
 
+/**
+ * Creates and returns a new Page instance tied to the active BrowserContext.
+ * 
+ * @returns {Promise<Page>} A newly created Playwright Page instance.
+ */
 export async function createPage(): Promise<Page> {
   const context = await getContext();
   const page = await context.newPage();
   return page;
 }
 
+/**
+ * Gracefully closes the active BrowserContext and Browser, cleaning up resources.
+ * 
+ * @returns {Promise<void>} Resolves when the browser forms are successfully closed.
+ */
 export async function closeBrowser(): Promise<void> {
   if (_context) {
     await _context.close();
