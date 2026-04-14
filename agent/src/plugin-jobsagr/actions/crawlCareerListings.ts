@@ -83,7 +83,10 @@ function normalizeUrl(raw: string, base: string): string | null {
         for (const p of ["utm_source", "utm_medium", "utm_campaign", "ref", "source"]) {
             u.searchParams.delete(p);
         }
-        return u.href.replace(/\/$/, "");
+        let clean = u.href.replace(/\/$/, "");
+        // Strip common "apply" suffixes so we get the JD instead of just the application form
+        clean = clean.replace(/\/(application|apply|apply-now|apply-for-this-job)$/i, "");
+        return clean;
     } catch {
         return null;
     }
@@ -135,11 +138,15 @@ function looksLikeJobDetail(url: string): boolean {
     // ATS patterns for detail pages
     if (/\/jobs\/[a-z0-9\-]+\/?\??/i.test(u)) return true;       // Lever, custom
     if (/\/o\/[a-z0-9\-]+/i.test(u)) return true;                // Greenhouse
-    if (/\/postings\/[a-z0-9\-]+/i.test(u)) return true;         // Ashby
+    if (/\/postings\/[a-z0-9\-]+/i.test(u)) return true;         // Ashby (old)
     if (/\/en\/search-results\/.+/i.test(u)) return true;         // Workday
     if (/\/job\/[a-z0-9\-]+/i.test(u)) return true;
     if (/\/position\/[a-z0-9\-]+/i.test(u)) return true;
     if (/\/opening\/[a-z0-9\-]+/i.test(u)) return true;
+    
+    // UUID in path, usually Ashby or similar ATS: /company/b877f336-7f38-4c31-a4b8-97abcf1e0c30
+    if (/\/[a-z0-9\.\-]+\/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/i.test(u)) return true;
+    
     // Has a UUID or slug segment after /jobs/ or /careers/ (Ashby format)
     if (/\/(jobs|careers|positions|openings)\/[a-f0-9\-]{8,}/i.test(u)) return true;
     return false;

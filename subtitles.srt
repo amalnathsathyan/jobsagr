@@ -1,0 +1,59 @@
+1
+00:00:00,000 --> 00:00:04,000
+This is JobsAgr — an autonomous job discovery agent
+built on the ElizaOS framework.
+
+2
+00:00:04,000 --> 00:00:09,000
+Spinning up the local agent instance.
+LLM runs on Nosana GPU cloud — no OpenAI dependency.
+
+3
+00:00:09,000 --> 00:00:13,000
+This is the chat interface.
+I'm giving it x.com/solana as the first target.
+
+4
+00:00:13,000 --> 00:00:18,000
+The agent triggers its custom SCRAPE_X_PROFILE action —
+profile → website → careers page → jobs.
+
+5
+00:00:18,000 --> 00:00:23,000
+Job board is empty right now.
+Queuing x.com/arbitrum and x.com/layerzero_core.
+
+6
+00:00:23,000 --> 00:00:28,000
+Each target runs its own pipeline concurrently.
+Watch the dashboard — listings are starting to appear.
+
+7
+00:00:28,000 --> 00:00:35,000
+Actions completing in real-time.
+LayerZero finished first — clicking a listing to verify.
+
+8
+00:00:35,000 --> 00:00:41,000
+Live job posting page — pulled and stored
+entirely by the agent. No manual searching.
+
+9
+00:00:41,000 --> 00:00:46,000
+Terminal confirms — Arbitrum's job links
+fetched and being processed.
+
+10
+00:00:46,000 --> 00:00:51,000
+Dashboard — Solana, Arbitrum, LayerZero.
+All three discovered and listed automatically.
+
+11
+00:00:51,000 --> 00:00:54,500
+Targets are entered manually for now —
+but full autonomy is the next step.
+
+12
+00:00:54,500 --> 00:00:57,000
+A self-updating feed, any industry, any niche.
+Powered by AI.

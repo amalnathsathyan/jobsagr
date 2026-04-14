@@ -83,19 +83,7 @@ function isDegenerate(text: string): boolean {
     return false;
 }
 
-/** Quick heuristic: does this page text look like a job posting? */
-function looksLikeJobPage(text: string): boolean {
-    const lower = text.toLowerCase();
-    const jobSignals = [
-        "apply", "responsibilities", "requirements", "qualifications",
-        "experience", "salary", "role", "position", "about the",
-        "what you'll do", "who you are", "what we're looking for",
-        "job description", "full-time", "part-time", "remote", "hybrid",
-        "compensation", "benefits", "we are looking", "you will",
-    ];
-    const matchCount = jobSignals.filter((s) => lower.includes(s)).length;
-    return matchCount >= 2;
-}
+// Heuristic looksLikeJobPage removed to allow LLM to make the decision
 
 /** Extract a readable title from a URL slug as fallback */
 function titleFromUrl(url: string): string | null {
@@ -135,11 +123,12 @@ async function llmExtract(
 
     const prompt = `Extract job info from this posting. Return ONLY valid JSON, nothing else.
 
-{"title": "JOB TITLE", "summary": "1-2 sentence summary max 200 chars", "description": "2-3 sentences about role max 400 chars", "category": "CATEGORY"}
+{"title": "JOB TITLE", "summary": "1-2 sentence summary max 150 chars", "description": "Extract the core requirements, responsibilities, and role overview. Max 1000 chars", "category": "CATEGORY"}
 
-Valid categories: ${JOB_CATEGORIES.join(", ")}
+Categories: ${JOB_CATEGORIES.join(", ")}
 
-If NOT a job posting, return: {"title": "NOT_A_JOB", "summary": "", "description": "", "category": "Other"}
+CRITICAL: If the text does NOT describe a specific job role (e.g., it is just a plain application form, a login page, or generic text without responsibilities), return: 
+{"title": "NOT_A_JOB", "summary": "", "description": "", "category": "Other"}
 
 URL: ${url}
 Text:
@@ -148,7 +137,7 @@ ${inputText}`;
     const raw = (await runtime.useModel(ModelType.TEXT_LARGE, {
         prompt,
         temperature: 0.1,
-        maxTokens: 500,
+        maxTokens: 1500,
     })) as string;
 
     // Detect degenerate output early
@@ -187,8 +176,8 @@ ${inputText}`;
 
     return {
         title,
-        summary: (parsed.summary || "").slice(0, 200).trim(),
-        description: (parsed.description || "").slice(0, 500).trim(),
+        summary: (parsed.summary || "").slice(0, 300).trim(),
+        description: (parsed.description || "").slice(0, 1500).trim(),
         category: JOB_CATEGORIES.includes(parsed.category) ? parsed.category : "Other",
     };
 }
@@ -214,24 +203,7 @@ export async function extractJobDetail(
 
         const hash = sha256(pageText);
 
-        // Validate: does this page look like a job posting?
-        if (!looksLikeJobPage(pageText)) {
-            console.warn(`⚠️ Skipping non-job page: ${rawUrl}`);
-            // Still try URL-based title
-            const urlTitle = titleFromUrl(rawUrl);
-            if (urlTitle) {
-                return {
-                    title: urlTitle,
-                    summary: "",
-                    category: "Other",
-                    description: pageText.slice(0, 300).replace(/\s+/g, " ").trim(),
-                    apply_url: rawUrl,
-                    content_hash: hash,
-                    canonical_url: canonical,
-                };
-            }
-            return null;
-        }
+        // Let the LLM decide if this is actually a job description
 
         const { title, summary, description, category } = await llmExtract(runtime, pageText, rawUrl);
 

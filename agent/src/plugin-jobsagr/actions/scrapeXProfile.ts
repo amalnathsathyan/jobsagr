@@ -158,9 +158,9 @@ async function findCareersUrlWithLLM(
 
   const prompt = `You are given a list of links from a company website: ${officialWebsite}
 
-Find the URL that leads to their careers/jobs page where they post job openings.
+Find the URL that leads to their careers/jobs page where they post job openings. This might also be a gateway CTA like "View Open Roles", "Explore Opportunities", or "Join Our Team".
 Return ONLY the URL string, nothing else. No explanation. No markdown.
-If no careers page link is found, return the word: null
+If no careers page or job link is found, return the word: null
 
 Links:
 ${linkList}`;
