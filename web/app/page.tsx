@@ -233,7 +233,7 @@ export default function Home() {
           className="text-sm leading-relaxed max-w-md mb-2"
           style={{ color: "var(--text-2)" }}
         >
-          An ElizaOS agent autonomously scrapes company profiles, finds career
+          An ElizaOS agent autonomously navigates company profiles, finds career
           pages, and surfaces opportunities in real-time.
         </p>
 
@@ -302,17 +302,17 @@ export default function Home() {
               className="text-xs font-mono"
               style={{ color: "var(--text-3)" }}
             >
-            {loading ? (
-              "Loading…"
-            ) : (
-              <>
-                <span style={{ color: "var(--text-2)" }}>{filtered.length}</span>{" "}
-                {filtered.length === 1 ? "role" : "roles"}
-                {jobs.length > 0 && (
-                  <> · updated {timeAgo(jobs[0].scraped_at)}</>
-                )}
-              </>
-            )}
+              {loading ? (
+                "Loading…"
+              ) : (
+                <>
+                  <span style={{ color: "var(--text-2)" }}>{filtered.length}</span>{" "}
+                  {filtered.length === 1 ? "role" : "roles"}
+                  {jobs.length > 0 && (
+                    <> · updated {timeAgo(jobs[0].scraped_at)}</>
+                  )}
+                </>
+              )}
             </span>
           </div>
         </div>
