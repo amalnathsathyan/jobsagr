@@ -1,29 +1,59 @@
-# JobsAgr
+# JobsAgr 🕵️
 
-**Theme:** Autonomous Web3 Job Discovery
+[![Live Demo](https://img.shields.io/badge/Live_Demo-Vercel-black?logo=vercel)](https://jobsagr.vercel.app/)
+[![YouTube](https://img.shields.io/badge/YouTube-Video_Demo-red?logo=youtube)](https://youtu.be/_d07KBSTmr8)
+[![Nosana Builders Challenge](https://img.shields.io/badge/Nosana_Builders_x_ElizaOS-Agent_Challenge-blue.svg)](https://nosana.io)
 
-## About the Project
-**JobsAgr** is an autonomous, AI-powered job discovery platform designed to automate the painful process of hunting for Web3 and tech-related career opportunities. Powered by an intelligent [ElizaOS](https://github.com/elizaOS/eliza) agent, JobsAgr methodically discovers job openings by:
-1. Identifying company profiles on platforms like X (Twitter).
-2. Navigating to and locating their official career/hiring pages.
-3. Automatically parsing job listings and synchronizing them into a shared Database (Supabase).
+**JobsAgr** is an autonomous Web3 job discovery agent built on the [ElizaOS framework](https://github.com/elizaOS/eliza). Designed and submitted for the **Nosana Builders x ElizaOS Agent Challenge**, it solves the fragmentation of the Web3 job market by extracting high-signal hiring data directly from their source: company X (Twitter) profiles.
 
-A real-time React/Next.js frontend then serves these aggregated job postings to users seamlessly. Originally built for the Nosana Builders' Challenge, this project demonstrates decentralized AI infrastructure by utilizing local LLM execution capabilities with Ollama.
+---
+
+## 🎯 The Problem
+
+Web3 job hunting is extremely fragmented. Paid aggregators often gatekeep listings, and free boards struggle to stay current with fast-moving ecosystems. While company social media profiles provide the most up-to-date and robust hiring signals, manually monitoring hundreds of accounts is an impossible task for a human.
+
+## 💡 The Solution: How JobsAgr Works
+
+Given an X profile URL, the JobsAgr agent autonomously executes the following workflow:
+1. **Discovery**: Navigates the company’s X profile to find their official website.
+2. **Navigation**: Locates the careers/jobs page, expertly handling Single Page Applications (SPAs) and complex redirects.
+3. **Extraction**: Uses LLM-powered data parsing to fetch and extract relevant job listings.
+4. **Delivery**: Pushes the structured results to a live dashboard database in real-time.
+
+A real-time React/Next.js frontend then serves these aggregated job postings to users seamlessly.
+
+## 🏗️ Technical Stack
+
+- **Core Framework**: ElizaOS
+- **Inference**: DeepSeek R1 (Running on Nosana GPU Cloud) / local LLM fallbacks
+- **Browser Automation**: Playwright
+- **Database**: Supabase
+- **Language**: TypeScript
+
+## 🚀 Current State & Roadmap
+
+The MVP successfully processes manual X profile inputs and has been actively verified across various ecosystems, including Solana, Arbitrum, LayerZero, and Mantle.
+
+**Future milestones include:**
+- **Full Autonomy**: Proactive X exploration without manual triggers, and gathering from more robust data sources like CoinMarketCap and CoinGecko.
+- **Enhanced Navigation**: Advanced handling of JavaScript-heavy, third-party job boards (e.g., Ashby, Greenhouse, Lever).
+- **Categorization**: Intelligent filtering and tagging directly on the user dashboard.
+- **Expansion**: Extending the same AI-driven approach beyond Web3 niches.
 
 ---
 
 ## 🛠 Developer Setup Guide
 
-This guide will walk you through spinning up the necessary services to run JobsAgr locally.
+This guide will walk you through spinning up the necessary services to run the JobsAgr agent locally.
 
 ### Prerequisites
 - [Bun](https://bun.sh/) (for the Eliza agent)
 - [Node.js & npm](https://nodejs.org/) (for the frontend web application)
-- [Ollama](https://ollama.com/) (for running the local LLM)
+- [Ollama](https://ollama.com/) (for running local LLM inference)
 
-### Step 1: Local Ollama Setup
+### Step 1: Local Ollama Setup (Development Inference)
 
-The JobsAgr agent relies on a local LLM to execute language tasks and embedding evaluations.
+The JobsAgr agent relies on an LLM to execute language tasks and parsing evaluations. 
 
 1. Ensure Ollama is installed on your machine.
 2. Pull the required model (`qwen2.5:7b`):
@@ -38,22 +68,22 @@ The JobsAgr agent relies on a local LLM to execute language tasks and embedding 
 
 ### Step 2: Running the AI Agent
 
-The `agent` directory houses the ElizaOS character configuration and the custom plugins for scraping data.
+The `agent` directory houses the ElizaOS character configuration and the custom automation plugins.
 
 1. Open a new terminal window and navigate to the `agent/` directory:
    ```bash
    cd agent
    ```
-2. *(Optional but required for initial checkout)* Install dependencies using bun:
+2. Install dependencies using bun:
    ```bash
    bun install
    ```
-3. Ensure your `.env` is correctly populated with the required keys (e.g., Supabase URLs) and local API paths. 
+3. Ensure your `.env` is correctly populated with the required keys (e.g., Supabase URLs) and local API connections. 
 4. Start the agent strictly in development mode:
    ```bash
    bun run dev
    ```
-   *(You should see logs indicating ElizaOS connected to your database and local Ollama).*
+   *(You should see logs indicating ElizaOS connected to your database and inference nodes).*
 
 ### Step 3: Running the Web App Frontend
 
@@ -75,8 +105,14 @@ The `web` directory holds the user-facing job portal.
 
 ---
 
-## ✨ Contributors
+## ✨ Team & Contributors
 
-A huge thanks to the developers who have contributed to making JobsAgr:
-- **[@ajeeshRS](https://github.com/ajeeshRS)**
-- **[@amalnathsathyan](https://github.com/amalnathsathyan)**
+Proudly built by:
+- **[Amalnath Sathyan](https://github.com/amalnathsathyan)** 
+- **[Ajeesh RS](https://github.com/ajeeshRS)** 
+
+---
+
+## 🔗 Project Links
+- [Live Web App Demo](https://jobsagr.vercel.app/)
+- [Video Demo (<1 minute)](https://youtu.be/_d07KBSTmr8)
