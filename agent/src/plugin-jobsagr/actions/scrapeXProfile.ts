@@ -54,11 +54,31 @@ const JOB_BOARD_DOMAINS = [
   "notion.site", "apply.workable", "jobs.ashbyhq",
 ];
 
+const APP_SUBDOMAINS = [
+  "app", "dashboard", "docs", "explorer", "beta", 
+  "testnet", "staging", "dev", "demo", "portal",
+];
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function normalizeInputUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    const parts = u.hostname.split(".");
+    if (parts.length >= 3 && APP_SUBDOMAINS.includes(parts[0])) {
+      u.hostname = parts.slice(1).join(".");
+      return u.origin;
+    }
+  } catch {}
+  return url;
+}
 
 const isAggregator = (url: string) => LINK_AGGREGATOR_PATTERNS.some((p) => url.includes(p));
 const isSkippable = (url: string) => SKIP_DOMAINS.some((d) => url.includes(d));
-const isCareersUrl = (url: string) => CAREERS_KEYWORDS.some((k) => url.toLowerCase().includes(k));
+const isCareersUrl = (url: string) => {
+  const lower = url.toLowerCase();
+  return CAREERS_KEYWORDS.some((k) => lower.includes(k)) || JOB_BOARD_DOMAINS.some((d) => lower.includes(d));
+};
 const settle = (page: Page, ms = 2500) => page.waitForTimeout(ms);
 
 // ─── Step 0: Extract jobs shown directly on the X profile page ───────────────
@@ -223,6 +243,36 @@ async function findCareersLink(
     } catch { /* skip */ }
   }
 
+  // 3. Subdomain guessing (if careers link not found on base domain)
+  const baseDomain = new URL(officialWebsite).hostname.replace(/^www\./, "");
+  const SUBDOMAINS = ["chain", "team", "company", "careers", "jobs", "about", "www"];
+  for (const sub of SUBDOMAINS) {
+      if (baseDomain.startsWith(sub + ".")) continue;
+      const subUrl = `https://${sub}.${baseDomain}`;
+      try {
+          const resp = await page.goto(subUrl, { timeout: 8000, waitUntil: "domcontentloaded" });
+          if (resp && resp.status() >= 200 && resp.status() < 400) {
+              const score = careersScore(subUrl, await page.title().catch(()=>""));
+              if (score > 0 || sub === "careers" || sub === "jobs") {
+                  console.log(`✅ Found via subdomain guess: ${subUrl}`);
+                  return subUrl;
+              }
+              // Try finding a careers link on this subdomain
+              const subLinks = await page.$$eval("a[href]", (els: any[]) =>
+                els.map((a) => ({ href: (a.href || "").trim(), text: (a.innerText || "").toLowerCase().trim() }))
+              ).catch(() => [] as { href: string; text: string }[]);
+              
+              for (const { href, text: subText } of subLinks) {
+                if (!href.startsWith("http")) continue;
+                if (careersScore(href, subText) > 0) {
+                    console.log(`✅ Found on subdomain ${subUrl}: ${href}`);
+                    return href;
+                }
+              }
+          }
+      } catch { /* skip */ }
+  }
+
   // Navigate back to homepage before LLM step
   try {
     await page.goto(officialWebsite, { timeout: 15000, waitUntil: "domcontentloaded" });
@@ -382,97 +432,132 @@ ${linkDump}`;
 // ─── Main Action ──────────────────────────────────────────────────────────────
 
 export const scrapeXProfile: Action = {
-  name: "SCRAPE_X_PROFILE",
-  similes: ["FIND_JOBS", "DISCOVER_JOBS", "CHECK_X_PROFILE", "FIND_COMPANY_JOBS", "GET_JOBS_FROM_X"],
+  name: "DISCOVER_COMPANY_JOBS",
+  similes: ["FIND_JOBS", "DISCOVER_JOBS", "CHECK_X_PROFILE", "FIND_COMPANY_JOBS", "GET_JOBS_FROM_X", "SCRAPE_WEBSITE"],
   description:
-    "Given an X (Twitter) profile URL, finds job listings by: (1) extracting any jobs shown directly on the X profile, (2) navigating to the company website, (3) finding the careers page, (4) extracting and storing all job listings.",
+    "Given any company website URL or X (Twitter) profile URL, finds job listings by navigating to the website, finding the careers page, and extracting/storing all job listings. Preserves X profile checks if an X URL is provided.",
 
   validate: async (_runtime, message) => {
     const text = message.content?.text || "";
-    return text.includes("x.com/") || text.includes("twitter.com/");
+    return /https?:\/\/[^\s]+/.test(text);
   },
 
   handler: async (runtime, message, _state, _options, callback) => {
     const cb = (msg: string) => callback?.({ text: msg, responseId: randomUUID() });
     const text = message.content?.text || "";
 
-    const urlMatch = text.match(/https?:\/\/(x\.com|twitter\.com)\/([A-Za-z0-9_]+)/);
+    const urlMatch = text.match(/https?:\/\/[^\s]+/);
     if (!urlMatch) {
-      cb("Provide a valid X profile URL (e.g. https://x.com/arbitrum).");
-      return { success: false, text: "No X profile URL found." };
+      cb("Provide a valid URL (e.g. https://x.com/arbitrum or https://tydrohq.com).");
+      return { success: false, text: "No URL found." };
     }
 
-    const profileUrl = urlMatch[0];
-    const handle = urlMatch[2];
-    let displayName = handle;
+    const inputUrl = urlMatch[0];
+    const isXProfile = inputUrl.includes("x.com") || inputUrl.includes("twitter.com");
+    
+    let profileUrl = "";
+    let handle = "";
+    let displayName = "";
+    let websiteUrl = inputUrl;
+    let xProfileJobs: JobRow[] = [];
+
     const page = await createPage();
 
     try {
-      // ── 1. Load X profile ──────────────────────────────────────────────
-      cb(`📍 Step 1 — Loading X profile: ${profileUrl}`);
-      await page.goto(profileUrl, { timeout: 25000, waitUntil: "domcontentloaded" });
-      await settle(page, 4000);
-
-      const loginWall = await page.$('input[autocomplete="username"]').then(Boolean).catch(() => false);
-      if (loginWall) {
-        await page.close();
-        console.log("⚠️ Login wall. Re-run: bun scripts/xLogin.ts");
-        return { success: false, text: "Login wall detected." };
-      }
-
-      displayName = await page
-        .$eval('[data-testid="UserName"] span', (el: any) => el.innerText.trim())
-        .catch(() => handle);
-
-      const bio = await page
-        .$eval('[data-testid="UserDescription"]', (el: any) => el.innerText.trim())
-        .catch(() => "");
-
-      console.log(`✅ Profile: ${displayName} (@${handle})\n📝 ${bio || "(no bio)"}`);
-
-      // ── 1b. Extract jobs shown directly on X profile (Arbitrum-style) ──
-      console.log(`🔍 Checking for jobs shown directly on X profile...`);
-      const xProfileJobs = await extractXProfileJobs(page, cb);
-      if (xProfileJobs.length > 0) {
-        console.log(`🎯 Found ${xProfileJobs.length} jobs on X profile page itself — storing...`);
-        const rows: JobRow[] = xProfileJobs.map((j) => ({
-          ...j,
-          company_name: displayName,
-          company_x_handle: handle,
-          company_website: "",
-          source_url: profileUrl,
-        }));
-        const stored = await upsertJobs(rows);
-        console.log(`✅ Stored ${stored} X-profile jobs. Continuing to find more from website...`);
-      }
-
-      // ── 2. Get website link from X profile ────────────────────────────
-      const websiteUrl: string =
-        (await page.$eval('[data-testid="UserUrl"] a', (el: any) => el.href).catch(() => "")) ||
-        (await page
-          .$$eval('[data-testid="UserProfileHeader_Items"] a[href]', (els: any[]) =>
-            els.map((a) => a.href)
-          )
-          .catch(() => [])
-          .then((ls: string[]) =>
-            ls.find((l) => !l.includes("x.com") && !l.includes("twitter.com")) || ""
-          )) ||
-        (await page
-          .$$eval('a[href*="t.co"]', (els: any[]) => els.map((a) => a.href))
-          .catch(() => [])
-          .then((ls: string[]) => ls[0] || ""));
-
-      if (!websiteUrl) {
-        await page.close();
-        if (xProfileJobs.length > 0) {
-          console.log(`⚠️  No website link on @${handle}, but stored ${xProfileJobs.length} X-profile jobs.`);
-          return { success: true, text: `Found ${xProfileJobs.length} jobs directly on @${handle}'s X profile.` };
+      if (isXProfile) {
+        const handleMatch = inputUrl.match(/https?:\/\/(?:x\.com|twitter\.com)\/([A-Za-z0-9_]+)/);
+        if (!handleMatch) {
+            cb("Provide a valid X profile URL or company website.");
+            return { success: false, text: "Invalid X URL." };
         }
-        console.log(`❌ No website link found on @${handle}'s profile.`);
-        return { success: false, text: `No website link on @${handle}.` };
+        profileUrl = inputUrl;
+        handle = handleMatch[1];
+        displayName = handle;
+
+        // ── 1. Load X profile ──────────────────────────────────────────────
+        cb(`📍 Step 1 — Loading X profile: ${profileUrl}`);
+        await page.goto(profileUrl, { timeout: 25000, waitUntil: "domcontentloaded" });
+        await settle(page, 4000);
+
+        const loginWall = await page.$('input[autocomplete="username"]').then(Boolean).catch(() => false);
+        if (loginWall) {
+          await page.close();
+          console.log("⚠️ Login wall. Re-run: bun scripts/xLogin.ts");
+          return { success: false, text: "Login wall detected." };
+        }
+
+        displayName = await page
+          .$eval('[data-testid="UserName"] span', (el: any) => el.innerText.trim())
+          .catch(() => handle);
+
+        const bio = await page
+          .$eval('[data-testid="UserDescription"]', (el: any) => el.innerText.trim())
+          .catch(() => "");
+
+        console.log(`✅ Profile: ${displayName} (@${handle})\n📝 ${bio || "(no bio)"}`);
+
+        // ── 1b. Extract jobs shown directly on X profile (Arbitrum-style) ──
+        console.log(`🔍 Checking for jobs shown directly on X profile...`);
+        xProfileJobs = await extractXProfileJobs(page, cb);
+        if (xProfileJobs.length > 0) {
+          console.log(`🎯 Found ${xProfileJobs.length} jobs on X profile page itself — storing...`);
+          const rows: JobRow[] = xProfileJobs.map((j) => ({
+            ...j,
+            company_name: displayName,
+            company_x_handle: handle,
+            company_website: "",
+            source_url: profileUrl,
+          }));
+          const stored = await upsertJobs(rows);
+          console.log(`✅ Stored ${stored} X-profile jobs. Continuing to find more from website...`);
+        }
+
+        // ── 2. Get website link from X profile ────────────────────────────
+        websiteUrl =
+          (await page.$eval('[data-testid="UserUrl"] a', (el: any) => el.href).catch(() => "")) ||
+          (await page
+            .$$eval('[data-testid="UserProfileHeader_Items"] a[href]', (els: any[]) =>
+              els.map((a) => a.href)
+            )
+            .catch(() => [])
+            .then((ls: string[]) =>
+              ls.find((l) => !l.includes("x.com") && !l.includes("twitter.com")) || ""
+            )) ||
+          (await page
+            .$$eval('a[href*="t.co"]', (els: any[]) => els.map((a) => a.href))
+            .catch(() => [])
+            .then((ls: string[]) => ls[0] || ""));
+
+        if (!websiteUrl) {
+          await page.close();
+          if (xProfileJobs.length > 0) {
+            console.log(`⚠️  No website link on @${handle}, but stored ${xProfileJobs.length} X-profile jobs.`);
+            return { success: true, text: `Found ${xProfileJobs.length} jobs directly on @${handle}'s X profile.` };
+          }
+          console.log(`❌ No website link found on @${handle}'s profile.`);
+          return { success: false, text: `No website link on @${handle}.` };
+        }
+      } else {
+        // Direct website link
+        cb(`📍 Step 1 — Direct website provided: ${inputUrl}`);
+        try {
+          const tempUrl = new URL(inputUrl);
+          const atsMatch = JOB_BOARD_DOMAINS.some((d) => tempUrl.hostname.includes(d));
+          if (atsMatch) {
+            const segments = tempUrl.pathname.split("/").filter(Boolean);
+            displayName = segments.length > 0 ? segments[0] : tempUrl.hostname.replace(/^www\./, "");
+          } else {
+            displayName = tempUrl.hostname.replace(/^www\./, "");
+          }
+        } catch {
+          displayName = inputUrl;
+        }
+        handle = ""; // No X handle
+        websiteUrl = inputUrl;
       }
 
-      console.log(`🔗 Website: ${websiteUrl}`);
+      websiteUrl = normalizeInputUrl(websiteUrl);
+      console.log(`🔗 Normalized Website: ${websiteUrl}`);
 
       // ── 3. Navigate to website ─────────────────────────────────────────
       console.log(`🌐 Step 2 — Navigating to: ${websiteUrl}`);
@@ -625,11 +710,11 @@ export const scrapeXProfile: Action = {
   examples: [
     [
       { name: "user", content: { text: "Find jobs from https://x.com/arbitrum" } },
-      { name: "agent", content: { text: "Starting job discovery for @arbitrum.", action: "SCRAPE_X_PROFILE" } },
+      { name: "agent", content: { text: "Starting job discovery for @arbitrum.", action: "DISCOVER_COMPANY_JOBS" } },
     ],
     [
-      { name: "user", content: { text: "https://x.com/Optimism find jobs" } },
-      { name: "agent", content: { text: "On it — scraping @Optimism's profile.", action: "SCRAPE_X_PROFILE" } },
+      { name: "user", content: { text: "https://x.com/circle" } },
+      { name: "agent", content: { text: "I'll scan Circle's profile and website for open roles.", action: "DISCOVER_COMPANY_JOBS" } },
     ],
   ],
 };

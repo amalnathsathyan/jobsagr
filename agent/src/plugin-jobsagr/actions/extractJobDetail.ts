@@ -85,13 +85,29 @@ function isDegenerate(text: string): boolean {
 
 // Heuristic looksLikeJobPage removed to allow LLM to make the decision
 
+/** Reject UUIDs, hex strings, and other non-human-readable text */
+function isHumanReadable(text: string): boolean {
+    if (!text || text.trim().length < 3) return false;
+    const t = text.trim();
+    // Reject UUID patterns
+    if (/^[a-f0-9]{8}-[a-f0-9]{4}-/i.test(t)) return false;
+    // Reject hex-only / numeric-only strings (with optional dashes/spaces)
+    if (/^[a-f0-9\s\-]+$/i.test(t)) return false;
+    // Reject purely numeric strings
+    if (/^[\d\s\-.]+$/.test(t)) return false;
+    // Must contain at least one alphabetic word of 2+ chars
+    const alphaWords = t.match(/[a-zA-Z]{2,}/g);
+    if (!alphaWords || alphaWords.length < 1) return false;
+    return true;
+}
+
 /** Extract a readable title from a URL slug as fallback */
 function titleFromUrl(url: string): string | null {
     try {
         const path = new URL(url).pathname;
         const slug = path.split("/").filter(Boolean).pop() || "";
         const cleaned = slug.replace(/^\d+-/, "").replace(/-/g, " ").trim();
-        if (cleaned.length > 3 && cleaned.length < 120) {
+        if (cleaned.length > 3 && cleaned.length < 120 && isHumanReadable(cleaned)) {
             return cleaned.split(" ").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
         }
     } catch { /* ignore */ }
@@ -173,10 +189,17 @@ ${inputText}`;
     if (!title || title.length < 2 || title.length > 200) {
         throw new Error(`Invalid title: "${title.slice(0, 50)}"`);
     }
+    if (!isHumanReadable(title)) {
+        throw new Error(`Non-human-readable title: "${title.slice(0, 50)}"`);
+    }
+
+    // Sanitize summary — if it's garbage, blank it out
+    let summary = (parsed.summary || "").slice(0, 300).trim();
+    if (!isHumanReadable(summary)) summary = "";
 
     return {
         title,
-        summary: (parsed.summary || "").slice(0, 300).trim(),
+        summary,
         description: (parsed.description || "").slice(0, 1500).trim(),
         category: JOB_CATEGORIES.includes(parsed.category) ? parsed.category : "Other",
     };
